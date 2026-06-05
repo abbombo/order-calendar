@@ -48,6 +48,12 @@ function App() {
   const [error, setError] = useState('');
   const [selectedDate, setSelectedDate] = useState(null);
   const [uploadedFileName, setUploadedFileName] = useState([]);
+
+  // Ecommerce order state
+  const [orders, setOrders] = useState([]);          // ecommerce orders
+  const [dataMode, setDataMode] = useState('bank');   // 'bank' | 'ecommerce'
+  const [orderDateField, setOrderDateField] = useState('order'); // 'order' | 'fulfil'
+  const [activePlatforms, setActivePlatforms] = useState(new Set()); // empty = show all
   
   // Filter state
   const [showFilterMenu, setShowFilterMenu] = useState(false);
@@ -1917,7 +1923,48 @@ function App() {
       prev.includes(fileName) ? prev : [...prev, fileName]
     );
 
+    // ── Ecommerce branch ──────────────────────────────────────────────────────
+    if (metadata?.mapperMode === 'ecommerce') {
+      const platformMap = {
+        'Shopify': 'shopify', 'TikTok Shop': 'tiktok',
+        'Etsy': 'etsy', 'WooCommerce': 'woo'
+      };
+      const platform = platformMap[metadata.bankName] || 'other';
+      const enriched = mappedTransactions.map(t => ({
+        ...t,
+        isOrder: true,
+        platform,
+        fulfil_date: t.time ? (() => { try { const d = new Date(t.time); return isNaN(d.getTime()) ? null : d; } catch { return null; } })() : null,
+      }));
+      const mode = columnMapperMode;
+      setUploadedFileName(prev => prev.includes(fileName) ? prev : [...prev, fileName]);
+      setLoadedFiles(prev => mode === 'merge' ? [...new Set([...prev, fileName])] : [fileName]);
+      setOrders(prev => {
+        if (mode === 'replace') return enriched;
+        const combined = [...prev, ...enriched];
+        return combined.filter((o, i, arr) =>
+          arr.findIndex(x => x.date.getTime() === o.date.getTime() && x.description === o.description && x.amount === o.amount && x.sourceFile === o.sourceFile) === i
+        );
+      });
+      setDataMode('ecommerce');
+      if (enriched.length > 0) {
+        const last = enriched.reduce((a, b) => a.date > b.date ? a : b);
+        setCurrentDate(new Date(last.date.getFullYear(), last.date.getMonth(), 1));
+      }
+      setError(null);
+      setShowColumnMapper(false);
+      setColumnMapperFile(null);
+      setUploadQueue(prev => {
+        if (prev.length === 0) return prev;
+        const [next, ...rest] = prev;
+        setTimeout(() => openColumnMapperForFile(next.file, next.mode), 50);
+        return rest;
+      });
+      return;
+    }
+
     applyParsedTransactions(mappedTransactions, fileName, mode);
+    setDataMode('bank');
 
     // Close the column mapper and clear file ref BEFORE opening next
     setShowColumnMapper(false);
@@ -2297,6 +2344,67 @@ function App() {
     return { income, expenses, net: income - expenses };
   };
 
+  // ── Ecommerce helper functions ─────────────────────────────────────────────
+
+  // Platform colours for dots
+  const PLATFORM_COLORS = {
+    shopify: '#96BF48',
+    tiktok:  '#111111',
+    etsy:    '#F56400',
+    woo:     '#7f54b3',
+    other:   '#9ca3af',
+  };
+  const PLATFORM_LABELS = {
+    shopify: 'Shopify', tiktok: 'TikTok Shop', etsy: 'Etsy', woo: 'WooCommerce', other: 'Other',
+  };
+
+  // Filtered orders (respects activePlatforms)
+  const getFilteredOrders = () => {
+    let filtered = orders.filter(o => loadedFiles.includes(o.sourceFile));
+    if (activePlatforms.size > 0) {
+      filtered = filtered.filter(o => activePlatforms.has(o.platform));
+    }
+    return filtered;
+  };
+
+  // Orders for a specific calendar day (respects orderDateField toggle)
+  const getOrdersForDay = (date) => {
+    return getFilteredOrders().filter(o => {
+      const d = (orderDateField === 'fulfil' && o.fulfil_date) ? o.fulfil_date : o.date;
+      return d.getDate() === date.getDate() &&
+             d.getMonth() === date.getMonth() &&
+             d.getFullYear() === date.getFullYear();
+    });
+  };
+
+  // Heatmap intensity based on order count
+  const getOrderHeatmapIntensity = (count) => {
+    if (count === 0) return 'bg-gray-100';
+    if (count <= 2)  return 'bg-[oklch(93%_0.04_148.98)]';
+    if (count <= 5)  return 'bg-[oklch(83%_0.07_148.98)]';
+    if (count <= 10) return 'bg-[oklch(74%_0.11_148.98)]';
+    if (count <= 20) return 'bg-[oklch(64%_0.13_148.98)]';
+    return 'bg-[oklch(53%_0.15_148.98)]';
+  };
+
+  // Ecommerce stats for a period
+  const getEcomStats = (orderList) => {
+    const count = orderList.length;
+    const revenue = orderList.reduce((s, o) => s + (o.amount || 0), 0);
+    const aov = count > 0 ? revenue / count : 0;
+    const fulfilled = orderList.filter(o => o.fulfil_date).length;
+    const fulfilRate = count > 0 ? Math.round((fulfilled / count) * 100) : 0;
+    return { count, revenue, aov, fulfilRate };
+  };
+
+  // Platforms present in the loaded orders
+  const getPresentPlatforms = () => {
+    const all = orders.filter(o => loadedFiles.includes(o.sourceFile));
+    return [...new Set(all.map(o => o.platform))].filter(Boolean);
+  };
+
+  // ──────────────────────────────────────────────────────────────────────────
+
   const getMonthTotal = (month, year) => {
     const monthTransactions = getFilteredTransactions().filter(t =>
       t.date.getMonth() === month &&
@@ -2367,8 +2475,8 @@ function App() {
         <div className="bg-white rounded-xl border border-gray-100 shadow-xl p-8 w-full max-w-sm">
           <div className="text-center mb-6">
             <Calendar className="w-10 h-10 text-indigo-600 mx-auto mb-3" />
-            <h1 className="text-xl font-semibold text-gray-900 mb-1">Transaction Calendar</h1>
-            <p className="text-sm text-gray-500">See your transactions in calendar format</p>
+            <h1 className="text-xl font-semibold text-gray-900 mb-1">Order Calendar</h1>
+            <p className="text-sm text-gray-500">See your orders in calendar format</p>
           </div>
 
           <form onSubmit={handleAuth} className="space-y-4">
@@ -2484,6 +2592,17 @@ function App() {
   const stats = getMonthStats();
   const yearStats = getYearStats();
 
+  const isEcomMode = dataMode === 'ecommerce' && orders.length > 0;
+  const filteredOrders = isEcomMode ? getFilteredOrders() : [];
+  const periodOrders = isEcomMode ? filteredOrders.filter(o => {
+    const d = (orderDateField === 'fulfil' && o.fulfil_date) ? o.fulfil_date : o.date;
+    return viewMode === 'year'
+      ? d.getFullYear() === currentDate.getFullYear()
+      : d.getMonth() === currentDate.getMonth() && d.getFullYear() === currentDate.getFullYear();
+  }) : [];
+  const ecomStats = isEcomMode ? getEcomStats(periodOrders) : null;
+  const presentPlatforms = isEcomMode ? getPresentPlatforms() : [];
+
   const calendarDays = [];
   for (let i = 0; i < startingDayOfWeek; i++) {
     calendarDays.push(<div key={`empty-${i}`} className="aspect-square" />);
@@ -2512,65 +2631,95 @@ function App() {
     
     const hasPredictions = dayTransactions.some(t => t.isPredicted);
 
-    calendarDays.push(
-      <div
-        key={day}
-        onClick={() => setSelectedDate(date)}
-        className={`aspect-square border border-gray-200 p-1 overflow-hidden cursor-pointer transition-colors relative ${
-          isSelected ? 'ring-2 ring-indigo-500' : ''
-        } ${
-          viewMode === 'heatmap' ? getHeatmapIntensity(dayTotal) : 'bg-white hover:bg-gray-50'
-        }`}
-      >
-        {hasPredictions && (
-          <Sparkles className="absolute top-1 right-1 w-3 h-3 text-purple-500" />
-        )}
-        <div className={`text-xs font-medium mb-1 ${viewMode === 'heatmap' && dayTotal !== 0 ? getHeatmapTextColor(dayTotal) : 'text-gray-400'}`}>{day}</div>
-        {viewMode === 'calendar' && sortedTransactions.length > 0 && (
-          <div className="space-y-0.5">
-            {sortedTransactions.slice(0, 3).map((t, i) => {
-              const isRecurring = t.isPredicted || isTransactionRecurring(t);
-              const isDirectDebit = t.type && (t.type.toLowerCase().includes('direct debit') || t.type.toLowerCase().includes('dd'));
+    if (isEcomMode) {
+      const dayOrders = getOrdersForDay(date);
+      const orderCount = dayOrders.length;
+      const dayGMV = dayOrders.reduce((s, o) => s + (o.amount || 0), 0);
+      const dayPlatforms = [...new Set(dayOrders.map(o => o.platform))];
 
-              return (
-                <div
-                  key={i}
-                  className={`text-xs p-0.5 rounded flex items-center gap-0.5 ${
-                    isRecurring
-                      ? 'bg-indigo-50 text-indigo-600 border border-indigo-100'
-                      : t.amount > 0
-                        ? 'bg-emerald-50 text-emerald-700'
-                        : 'bg-rose-50 text-rose-700'
-                  }`}
-                  title={`${t.description}: ${t.isPredicted && t.isVariableAmount ? '~' : ''}£${Math.abs(t.amount).toFixed(2)}${t.isPredicted ? ' (Predicted)' : isRecurring ? ' (Recurring)' : ''}${t.isVariableAmount ? ` (Variable: £${t.minAmount.toFixed(2)}-£${t.maxAmount.toFixed(2)})` : ''}`}
-                >
-                  {isDirectDebit && !t.isPredicted && (
-                    <span className="text-[9px] font-bold flex-shrink-0">DD</span>
-                  )}
-                  {isRecurring && !t.isPredicted && (
-                    <Repeat className="w-2.5 h-2.5 flex-shrink-0" />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="truncate font-medium">{t.description}</div>
-                    <div className="text-xs font-semibold">
-                      {t.isPredicted && t.isVariableAmount ? '~' : ''}£{Math.abs(t.amount).toFixed(2)}
+      calendarDays.push(
+        <div
+          key={day}
+          onClick={() => setSelectedDate(date)}
+          className={`aspect-square border border-gray-200 p-1 overflow-hidden cursor-pointer transition-colors relative ${
+            isSelected ? 'ring-2 ring-indigo-500' : ''
+          } ${viewMode === 'heatmap' ? getOrderHeatmapIntensity(orderCount) : 'bg-white hover:bg-gray-50'}`}
+        >
+          <div className="text-xs font-medium text-gray-400 mb-0.5">{day}</div>
+          {orderCount > 0 && (
+            <>
+              <div className="text-xs font-bold text-gray-700">{orderCount} order{orderCount !== 1 ? 's' : ''}</div>
+              <div className="text-xs text-gray-500">£{dayGMV.toFixed(0)}</div>
+              <div className="flex gap-0.5 mt-0.5 flex-wrap">
+                {dayPlatforms.map(p => (
+                  <div key={p} className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: PLATFORM_COLORS[p] || '#9ca3af' }} title={PLATFORM_LABELS[p] || p} />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      );
+    } else {
+      calendarDays.push(
+        <div
+          key={day}
+          onClick={() => setSelectedDate(date)}
+          className={`aspect-square border border-gray-200 p-1 overflow-hidden cursor-pointer transition-colors relative ${
+            isSelected ? 'ring-2 ring-indigo-500' : ''
+          } ${
+            viewMode === 'heatmap' ? getHeatmapIntensity(dayTotal) : 'bg-white hover:bg-gray-50'
+          }`}
+        >
+          {hasPredictions && (
+            <Sparkles className="absolute top-1 right-1 w-3 h-3 text-purple-500" />
+          )}
+          <div className={`text-xs font-medium mb-1 ${viewMode === 'heatmap' && dayTotal !== 0 ? getHeatmapTextColor(dayTotal) : 'text-gray-400'}`}>{day}</div>
+          {viewMode === 'calendar' && sortedTransactions.length > 0 && (
+            <div className="space-y-0.5">
+              {sortedTransactions.slice(0, 3).map((t, i) => {
+                const isRecurring = t.isPredicted || isTransactionRecurring(t);
+                const isDirectDebit = t.type && (t.type.toLowerCase().includes('direct debit') || t.type.toLowerCase().includes('dd'));
+
+                return (
+                  <div
+                    key={i}
+                    className={`text-xs p-0.5 rounded flex items-center gap-0.5 ${
+                      isRecurring
+                        ? 'bg-indigo-50 text-indigo-600 border border-indigo-100'
+                        : t.amount > 0
+                          ? 'bg-emerald-50 text-emerald-700'
+                          : 'bg-rose-50 text-rose-700'
+                    }`}
+                    title={`${t.description}: ${t.isPredicted && t.isVariableAmount ? '~' : ''}£${Math.abs(t.amount).toFixed(2)}${t.isPredicted ? ' (Predicted)' : isRecurring ? ' (Recurring)' : ''}${t.isVariableAmount ? ` (Variable: £${t.minAmount.toFixed(2)}-£${t.maxAmount.toFixed(2)})` : ''}`}
+                  >
+                    {isDirectDebit && !t.isPredicted && (
+                      <span className="text-[9px] font-bold flex-shrink-0">DD</span>
+                    )}
+                    {isRecurring && !t.isPredicted && (
+                      <Repeat className="w-2.5 h-2.5 flex-shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="truncate font-medium">{t.description}</div>
+                      <div className="text-xs font-semibold">
+                        {t.isPredicted && t.isVariableAmount ? '~' : ''}£{Math.abs(t.amount).toFixed(2)}
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-            {sortedTransactions.length > 3 && (
-              <div className="text-xs text-gray-500 font-medium">+{sortedTransactions.length - 3} more</div>
-            )}
-          </div>
-        )}
-        {viewMode === 'heatmap' && dayTotal !== 0 && (
-          <div className={`text-sm font-bold ${getHeatmapTextColor(dayTotal)}`}>
-            {dayTotal < 0 ? '-' : ''}£{Math.abs(dayTotal).toFixed(0)}
-          </div>
-        )}
-      </div>
-    );
+                );
+              })}
+              {sortedTransactions.length > 3 && (
+                <div className="text-xs text-gray-500 font-medium">+{sortedTransactions.length - 3} more</div>
+              )}
+            </div>
+          )}
+          {viewMode === 'heatmap' && dayTotal !== 0 && (
+            <div className={`text-sm font-bold ${getHeatmapTextColor(dayTotal)}`}>
+              {dayTotal < 0 ? '-' : ''}£{Math.abs(dayTotal).toFixed(0)}
+            </div>
+          )}
+        </div>
+      );
+    }
   }
 
   // Year View
@@ -2578,33 +2727,58 @@ function App() {
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   
   for (let m = 0; m < 12; m++) {
-    const monthTotal = getMonthTotal(m, year);
-    const monthColor = monthTotal === 0 ? 'bg-gray-100' : getHeatmapIntensity(monthTotal);
-    
-    // Check if month has predicted transactions
-    const hasPredictions = showPredictions && predictedTransactions.some(t =>
-      t.date.getMonth() === m &&
-      t.date.getFullYear() === year
-    );
-    
-    yearView.push(
-      <div
-        key={m}
-        onClick={() => {
-          setCurrentDate(new Date(year, m, 1));
-          setViewMode('calendar');
-        }}
-        className={`${monthColor} border border-gray-300 rounded-md p-4 cursor-pointer hover:shadow-lg transition-all relative`}
-      >
-        {hasPredictions && (
-          <Sparkles className="absolute top-2 right-2 w-4 h-4 text-purple-600" />
-        )}
-        <div className={`text-sm font-bold mb-2 ${monthTotal === 0 ? 'text-gray-600' : getHeatmapTextColor(monthTotal)}`}>{monthNames[m]}</div>
-        <div className={`text-sm font-bold ${monthTotal === 0 ? 'text-gray-700' : getHeatmapTextColor(monthTotal)}`}>
-          {monthTotal >= 0 ? '+' : ''}£{monthTotal.toFixed(0)}
+    if (isEcomMode) {
+      const monthOrders = getFilteredOrders().filter(o => {
+        const d = (orderDateField === 'fulfil' && o.fulfil_date) ? o.fulfil_date : o.date;
+        return d.getMonth() === m && d.getFullYear() === year;
+      });
+      const monthOrderCount = monthOrders.length;
+      const monthOrderColor = getOrderHeatmapIntensity(monthOrderCount);
+      const monthGMV = monthOrders.reduce((s, o) => s + (o.amount || 0), 0);
+
+      yearView.push(
+        <div
+          key={m}
+          onClick={() => {
+            setCurrentDate(new Date(year, m, 1));
+            setViewMode('calendar');
+          }}
+          className={`${monthOrderColor} border border-gray-300 rounded-md p-4 cursor-pointer hover:shadow-lg transition-all relative`}
+        >
+          <div className="text-sm font-bold mb-2 text-gray-700">{monthNames[m]}</div>
+          <div className="text-sm font-bold text-gray-800">{monthOrderCount} orders</div>
+          <div className="text-xs text-gray-600">£{monthGMV.toFixed(0)}</div>
         </div>
-      </div>
-    );
+      );
+    } else {
+      const monthTotal = getMonthTotal(m, year);
+      const monthColor = monthTotal === 0 ? 'bg-gray-100' : getHeatmapIntensity(monthTotal);
+
+      // Check if month has predicted transactions
+      const hasPredictions = showPredictions && predictedTransactions.some(t =>
+        t.date.getMonth() === m &&
+        t.date.getFullYear() === year
+      );
+
+      yearView.push(
+        <div
+          key={m}
+          onClick={() => {
+            setCurrentDate(new Date(year, m, 1));
+            setViewMode('calendar');
+          }}
+          className={`${monthColor} border border-gray-300 rounded-md p-4 cursor-pointer hover:shadow-lg transition-all relative`}
+        >
+          {hasPredictions && (
+            <Sparkles className="absolute top-2 right-2 w-4 h-4 text-purple-600" />
+          )}
+          <div className={`text-sm font-bold mb-2 ${monthTotal === 0 ? 'text-gray-600' : getHeatmapTextColor(monthTotal)}`}>{monthNames[m]}</div>
+          <div className={`text-sm font-bold ${monthTotal === 0 ? 'text-gray-700' : getHeatmapTextColor(monthTotal)}`}>
+            {monthTotal >= 0 ? '+' : ''}£{monthTotal.toFixed(0)}
+          </div>
+        </div>
+      );
+    }
   }
 
   return (
@@ -2858,8 +3032,21 @@ function App() {
         {/* Main content */}
         <main className="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6">
         <div id="export-card" className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-          {/* Date range + transaction count */}
+          {/* Date range + transaction/order count */}
           {(() => {
+            if (isEcomMode) {
+              const displayOrders = getFilteredOrders();
+              if (displayOrders.length === 0) return null;
+              return (
+                <div className="text-center mb-4">
+                  <p className="text-xs text-gray-500">
+                    📅 {new Date(Math.min(...displayOrders.map(o => o.date.getTime()))).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })} – {new Date(Math.max(...displayOrders.map(o => o.date.getTime()))).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}
+                    <span className="text-gray-300 mx-1.5">•</span>
+                    {`${displayOrders.length} orders${activePlatforms.size > 0 ? ' (filtered)' : ''}`}
+                  </p>
+                </div>
+              );
+            }
             const displayTransactions = getFilteredTransactions();
             if (displayTransactions.length === 0) return null;
             return (
@@ -2867,7 +3054,7 @@ function App() {
                 <p className="text-xs text-gray-500">
                   📅 {new Date(Math.min(...displayTransactions.map(t => t.date.getTime()))).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })} – {new Date(Math.max(...displayTransactions.map(t => t.date.getTime()))).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}
                   <span className="text-gray-300 mx-1.5">•</span>
-                  {displayTransactions.length} transactions{hasActiveFilters() ? ' (filtered)' : ''}
+                  {`${displayTransactions.length} orders${hasActiveFilters() ? ' (filtered)' : ''}`}
                 </p>
               </div>
             );
@@ -2879,73 +3066,118 @@ function App() {
             </div>
           )}
 
-          {getFilteredTransactions().length > 0 && (
+          {(isEcomMode ? filteredOrders.length > 0 : getFilteredTransactions().length > 0) && (
             <>
               {/* Stats Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <TrendingUp className="w-5 h-5 text-green-600" />
-                    <span className="text-sm font-medium text-green-800">
-                      {viewMode === 'year' ? 'Year Income' : 'Month Income'}
-                    </span>
+              {isEcomMode ? (
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                  <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-sm font-medium text-indigo-800">
+                        {viewMode === 'year' ? 'Year Orders' : 'Month Orders'}
+                      </span>
+                    </div>
+                    <div className="text-2xl font-bold text-indigo-700">
+                      {ecomStats.count}
+                    </div>
                   </div>
-                  <div className="text-2xl font-bold text-green-700">
-                    £{(viewMode === 'year' ? yearStats : stats).income.toFixed(2)}
+
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <TrendingUp className="w-5 h-5 text-green-600" />
+                      <span className="text-sm font-medium text-green-800">
+                        {viewMode === 'year' ? 'Year Revenue' : 'Month Revenue'}
+                      </span>
+                    </div>
+                    <div className="text-2xl font-bold text-green-700">
+                      £{ecomStats.revenue.toFixed(2)}
+                    </div>
+                  </div>
+
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-sm font-medium text-blue-800">Avg Order Value</span>
+                    </div>
+                    <div className="text-2xl font-bold text-blue-700">
+                      £{ecomStats.aov.toFixed(2)}
+                    </div>
+                  </div>
+
+                  <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-sm font-medium text-purple-800">Fulfilment Rate</span>
+                    </div>
+                    <div className="text-2xl font-bold text-purple-700">
+                      {ecomStats.fulfilRate}%
+                    </div>
                   </div>
                 </div>
-
-                <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <TrendingDown className="w-5 h-5 text-red-600" />
-                    <span className="text-sm font-medium text-red-800">
-                      {viewMode === 'year' ? 'Year Expenses' : 'Month Expenses'}
-                    </span>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <TrendingUp className="w-5 h-5 text-green-600" />
+                      <span className="text-sm font-medium text-green-800">
+                        {viewMode === 'year' ? 'Year Income' : 'Month Income'}
+                      </span>
+                    </div>
+                    <div className="text-2xl font-bold text-green-700">
+                      £{(viewMode === 'year' ? yearStats : stats).income.toFixed(2)}
+                    </div>
                   </div>
-                  <div className="text-2xl font-bold text-red-700">
-                    £{(viewMode === 'year' ? yearStats : stats).expenses.toFixed(2)}
+
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <TrendingDown className="w-5 h-5 text-red-600" />
+                      <span className="text-sm font-medium text-red-800">
+                        {viewMode === 'year' ? 'Year Expenses' : 'Month Expenses'}
+                      </span>
+                    </div>
+                    <div className="text-2xl font-bold text-red-700">
+                      £{(viewMode === 'year' ? yearStats : stats).expenses.toFixed(2)}
+                    </div>
+                  </div>
+
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-sm font-medium text-blue-800">
+                        {viewMode === 'year' ? 'Year Net' : 'Month Net'}
+                      </span>
+                    </div>
+                    <div className={`text-2xl font-bold ${(viewMode === 'year' ? yearStats : stats).net >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
+                      £{(viewMode === 'year' ? yearStats : stats).net.toFixed(2)}
+                    </div>
+                  </div>
+
+                  <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <RefreshCw className="w-5 h-5 text-purple-600" />
+                      <span className="text-sm font-medium text-purple-800">Recurring Transactions</span>
+                      {potentialDuplicates.length > 0 && (
+                        <AlertTriangle className="w-5 h-5 text-amber-600" />
+                      )}
+                    </div>
+                    <div className="text-2xl font-bold text-purple-700">
+                      {recurringTransactions.length + manualRecurring.length}
+                      <span className="text-lg font-semibold text-purple-600 ml-2">
+                        (£{(
+                          [...recurringTransactions, ...manualRecurring]
+                            .reduce((sum, r) => sum + Math.abs(r.amount), 0)
+                        ).toFixed(2)}/mo)
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setShowRecurring(!showRecurring)}
+                      className="text-xs text-purple-600 hover:text-purple-700 mt-1"
+                    >
+                      {showRecurring ? 'Hide' : 'View'} details
+                    </button>
                   </div>
                 </div>
+              )}
 
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-sm font-medium text-blue-800">
-                      {viewMode === 'year' ? 'Year Net' : 'Month Net'}
-                    </span>
-                  </div>
-                  <div className={`text-2xl font-bold ${(viewMode === 'year' ? yearStats : stats).net >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
-                    £{(viewMode === 'year' ? yearStats : stats).net.toFixed(2)}
-                  </div>
-                </div>
-
-                <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <RefreshCw className="w-5 h-5 text-purple-600" />
-                    <span className="text-sm font-medium text-purple-800">Recurring Transactions</span>
-                    {potentialDuplicates.length > 0 && (
-                      <AlertTriangle className="w-5 h-5 text-amber-600" />
-                    )}
-                  </div>
-                  <div className="text-2xl font-bold text-purple-700">
-                    {recurringTransactions.length + manualRecurring.length}
-                    <span className="text-lg font-semibold text-purple-600 ml-2">
-                      (£{(
-                        [...recurringTransactions, ...manualRecurring]
-                          .reduce((sum, r) => sum + Math.abs(r.amount), 0)
-                      ).toFixed(2)}/mo)
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => setShowRecurring(!showRecurring)}
-                    className="text-xs text-purple-600 hover:text-purple-700 mt-1"
-                  >
-                    {showRecurring ? 'Hide' : 'View'} details
-                  </button>
-                </div>
-              </div>
-
-              {/* Recurring Transactions Panel */}
-              {showRecurring && (recurringTransactions.length > 0 || manualRecurring.length > 0) && (
+              {/* Recurring Transactions Panel — bank mode only */}
+              {!isEcomMode && showRecurring && (recurringTransactions.length > 0 || manualRecurring.length > 0) && (
                 <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
                   <div className="flex items-center justify-between px-4 py-3 bg-gray-50 border-b border-gray-200">
                     <div className="flex items-center gap-2">
@@ -3133,6 +3365,53 @@ function App() {
                 </button>
               </div>
 
+              {/* Platform filter pills — ecommerce mode only */}
+              {isEcomMode && presentPlatforms.length > 0 && (
+                <div data-no-export className="flex gap-2 mb-3 flex-wrap">
+                  <button
+                    onClick={() => setActivePlatforms(new Set())}
+                    className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                      activePlatforms.size === 0 ? 'bg-gray-800 text-white border-gray-800' : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+                    }`}
+                  >All</button>
+                  {presentPlatforms.map(p => (
+                    <button
+                      key={p}
+                      onClick={() => setActivePlatforms(prev => {
+                        const next = new Set(prev);
+                        if (next.has(p)) next.delete(p); else next.add(p);
+                        return next;
+                      })}
+                      className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors flex items-center gap-1.5 ${
+                        activePlatforms.has(p) ? 'text-white border-transparent' : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+                      }`}
+                      style={activePlatforms.has(p) ? { backgroundColor: PLATFORM_COLORS[p] } : {}}
+                    >
+                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: PLATFORM_COLORS[p] }} />
+                      {PLATFORM_LABELS[p] || p}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Order date / Fulfilment date toggle — ecommerce mode only */}
+              {isEcomMode && (
+                <div data-no-export className="flex gap-2 mb-3">
+                  <button
+                    onClick={() => setOrderDateField('order')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                      orderDateField === 'order' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-600 border-gray-300 hover:border-indigo-400'
+                    }`}
+                  >Order date</button>
+                  <button
+                    onClick={() => setOrderDateField('fulfil')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                      orderDateField === 'fulfil' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-600 border-gray-300 hover:border-indigo-400'
+                    }`}
+                  >Fulfilment date</button>
+                </div>
+              )}
+
               {/* View Mode Buttons */}
               <div data-no-export className="flex gap-2 mb-4 flex-wrap">
                 <button
@@ -3222,197 +3501,260 @@ function App() {
               {/* Selected Date Details */}
               {selectedDate && viewMode !== 'year' && (
                 <div className="mt-5 border-t border-gray-100 pt-5">
-                  <div className="flex items-center justify-between mb-3">
-                    <div>
-                      <h3 className="text-sm font-semibold text-gray-800">
-                        {selectedDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
-                      </h3>
-                      <p className="text-xs text-gray-400 mt-0.5">
-                        {getTransactionsForDate(selectedDate).length} transaction{getTransactionsForDate(selectedDate).length !== 1 ? 's' : ''}
-                      </p>
-                    </div>
-                    
-                    {getTransactionsForDate(selectedDate).filter(t => !t.isPredicted).length > 0 && (
-                      !isTransactionEditMode ? (
-                        <button
-                          onClick={() => setIsTransactionEditMode(true)}
-                          className="px-3 py-1.5 text-sm font-medium text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                        >
-                          Edit
-                        </button>
+                  {isEcomMode ? (
+                    (() => {
+                      const dayOrds = getOrdersForDay(selectedDate);
+                      const STATUS_COLORS = {
+                        paid: 'bg-green-100 text-green-800',
+                        pending: 'bg-amber-100 text-amber-800',
+                        refunded: 'bg-blue-100 text-blue-800',
+                        cancelled: 'bg-red-100 text-red-800',
+                      };
+                      return dayOrds.length > 0 ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between mb-3">
+                            <div>
+                              <h3 className="text-sm font-semibold text-gray-800">
+                                {selectedDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
+                              </h3>
+                              <p className="text-xs text-gray-400 mt-0.5">{dayOrds.length} order{dayOrds.length !== 1 ? 's' : ''} · £{dayOrds.reduce((s,o) => s+o.amount,0).toFixed(2)} GMV</p>
+                            </div>
+                          </div>
+                          <div className="border rounded-lg overflow-hidden">
+                            <table className="w-full text-sm">
+                              <thead className="bg-gray-50">
+                                <tr>
+                                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Order ID</th>
+                                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Customer / Product</th>
+                                  <th className="px-3 py-2 text-right text-xs font-medium text-gray-500">Amount</th>
+                                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Status</th>
+                                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Platform</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-gray-100">
+                                {dayOrds.map((o, i) => {
+                                  const statusKey = (o.type || '').toLowerCase();
+                                  const badgeClass = STATUS_COLORS[statusKey] || 'bg-gray-100 text-gray-700';
+                                  return (
+                                    <tr key={i} className="hover:bg-gray-50">
+                                      <td className="px-3 py-2 text-gray-600 font-mono text-xs">{o.reference || '—'}</td>
+                                      <td className="px-3 py-2 text-gray-900 max-w-[140px] truncate">{o.description}</td>
+                                      <td className="px-3 py-2 text-right font-medium text-gray-900">£{Math.abs(o.amount).toFixed(2)}</td>
+                                      <td className="px-3 py-2">
+                                        {o.type ? <span className={`inline-flex px-1.5 py-0.5 rounded text-xs font-medium ${badgeClass}`}>{o.type}</span> : <span className="text-gray-400">—</span>}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <span className="inline-flex items-center gap-1 text-xs text-gray-600">
+                                          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: PLATFORM_COLORS[o.platform] || '#9ca3af' }} />
+                                          {PLATFORM_LABELS[o.platform] || o.platform || '—'}
+                                        </span>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
                       ) : (
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={selectAllDayTransactions}
-                            className="px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                          >
-                            {selectedTransactionIds.size === getTransactionsForDate(selectedDate).filter(t => !t.isPredicted).length 
-                              ? 'Deselect All' 
-                              : 'Select All'}
-                          </button>
-                          <button
-                            onClick={clearTransactionSelection}
-                            className="px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                          >
-                            Done
-                          </button>
-                        </div>
-                      )
-                    )}
-                  </div>
-
-                  {getTransactionsForDate(selectedDate).length > 0 ? (
-                    <div className="space-y-2">
-                      {getTransactionsForDate(selectedDate).map((transaction, idx) => {
-                        const transactionId = getTransactionId(transaction);
-                        const isSelected = selectedTransactionIds.has(transactionId);
-                        const isSelectableTransaction = !transaction.isPredicted;
-                        
-                        return (
-                          <div
-                            key={idx}
-                            onClick={() => isTransactionEditMode && isSelectableTransaction && toggleTransactionSelection(transactionId)}
-                            className={`p-3 rounded-lg border border-gray-100 border-l-4 transition-colors ${
-                              isTransactionEditMode && isSelectableTransaction ? 'cursor-pointer' : ''
-                            } ${
-                              isSelected
-                                ? 'bg-red-50 border-l-red-400 border-gray-100'
-                                : transaction.amount > 0
-                                  ? 'bg-emerald-50 border-l-emerald-300'
-                                  : 'bg-rose-50 border-l-rose-300'
-                            }`}
-                          >
-                            <div className="flex justify-between items-start mb-2">
-                              {/* Checkbox in edit mode */}
-                              {isTransactionEditMode && isSelectableTransaction && (
-                                <div 
-                                  className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors mr-3 flex-shrink-0 mt-1 ${
-                                    isSelected 
-                                      ? 'bg-red-500 border-red-500' 
-                                      : 'border-gray-300 bg-white hover:border-red-300'
-                                  }`}
-                                >
-                                  {isSelected && (
-                                    <Check className="w-3 h-3 text-white" />
-                                  )}
-                                </div>
-                              )}
-                              
-                              <div className="flex-1 min-w-0">
-                                <div className={`text-sm font-medium flex items-center gap-1.5 flex-wrap ${isSelected ? 'text-red-900' : 'text-gray-900'}`}>
-                                  {transaction.description}
-                                  {transaction.type && (transaction.type.toLowerCase().includes('direct debit') || transaction.type.toLowerCase().includes('dd')) && (
-                                    <span className="text-xs bg-sky-50 text-sky-700 border border-sky-200 px-1.5 py-0.5 rounded font-medium">DD</span>
-                                  )}
-                                  {!transaction.isPredicted && isTransactionRecurring(transaction) && (
-                                    <span className="text-xs bg-indigo-50 text-indigo-600 border border-indigo-100 px-1.5 py-0.5 rounded flex items-center gap-1">
-                                      <Repeat className="w-2.5 h-2.5" />
-                                      recurring
-                                    </span>
-                                  )}
-                                </div>
-                                {transaction.time && (
-                                  <div className="text-xs text-gray-400 mt-0.5">
-                                    {transaction.time}
-                                  </div>
-                                )}
-                                {transaction.frequency && (
-                                  <div className="text-xs text-gray-400 mt-0.5">
-                                    {transaction.frequency}
-                                  </div>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-2 flex-shrink-0 ml-2">
-                                <div className={`text-sm font-semibold ${
-                                  isSelected ? 'text-red-700'
-                                    : transaction.amount > 0 ? 'text-emerald-700' : 'text-rose-700'
-                                }`}>
-                                  {transaction.amount > 0 ? '+' : '-'}£{Math.abs(transaction.amount).toFixed(2)}
-                                </div>
-                                {/* Recurring button - only show when NOT in edit mode */}
-                                {!isTransactionEditMode && !transaction.isPredicted && !transaction.type?.toLowerCase().includes('direct debit') && !transaction.type?.toLowerCase().includes('dd') && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      openRecurringModal(transaction);
-                                    }}
-                                    className="text-gray-400 hover:text-indigo-500 p-1.5 hover:bg-indigo-50 rounded-lg transition-colors"
-                                    title="Mark as recurring"
-                                  >
-                                    <Repeat className="w-4 h-4" />
-                                  </button>
-                                )}
-                                {!isTransactionEditMode && !transaction.isPredicted && (transaction.type?.toLowerCase().includes('direct debit') || transaction.type?.toLowerCase().includes('dd')) && (
-                                  <div className="text-xs text-sky-600 bg-sky-50 border border-sky-100 px-2 py-1 rounded">
-                                    Auto-recurring
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                            
-                            {(transaction.type || transaction.category || transaction.reference) && (
-                              <div className={`flex flex-wrap gap-1.5 mt-2 ${isTransactionEditMode && isSelectableTransaction ? 'ml-7' : ''}`}>
-                                {transaction.type && (
-                                  <span className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded px-2 py-0.5">{transaction.type}</span>
-                                )}
-                                {transaction.category && (
-                                  <span className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded px-2 py-0.5">{transaction.category}</span>
-                                )}
-                                {transaction.reference && (
-                                  <span className="text-xs text-gray-400 bg-gray-50 border border-gray-100 rounded px-2 py-0.5">{transaction.reference}</span>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                      
-                      {/* Delete Action Bar - shown when items selected */}
-                      {selectedTransactionIds.size > 0 && (
-                        <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
-                          <span className="text-sm font-medium text-red-800">
-                            {selectedTransactionIds.size} transaction{selectedTransactionIds.size > 1 ? 's' : ''} selected
-                          </span>
-                          <button
-                            onClick={() => setShowDeleteConfirmModal(true)}
-                            className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors font-medium text-sm"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                            Delete Selected
-                          </button>
-                        </div>
-                      )}
-                      
-                      {selectedTransactionIds.size === 0 && (
-                        <div className="mt-3 p-3 bg-gray-50 border border-gray-200 rounded-lg">
-                          <div className="space-y-1.5">
-                            <div className="flex justify-between items-center">
-                              <span className="text-sm text-gray-500">Income</span>
-                              <span className="text-sm font-semibold text-emerald-700">+£{getDayStats(selectedDate).income.toFixed(2)}</span>
-                            </div>
-                            <div className="flex justify-between items-center">
-                              <span className="text-sm text-gray-500">Expenses</span>
-                              <span className="text-sm font-semibold text-rose-700">-£{getDayStats(selectedDate).expenses.toFixed(2)}</span>
-                            </div>
-                            <div className="border-t border-gray-200 pt-1.5 flex justify-between items-center">
-                              <span className="text-sm font-medium text-gray-600">Net</span>
-                              <span className={`text-sm font-semibold ${getDayStats(selectedDate).net >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                                {getDayStats(selectedDate).net >= 0 ? '+' : ''}£{getDayStats(selectedDate).net.toFixed(2)}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
+                        <div className="text-center py-6 text-gray-400 text-sm">No orders on this day</div>
+                      );
+                    })()
                   ) : (
-                    <p className="text-gray-500 text-center py-8">No transactions on this date</p>
+                    <>
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <h3 className="text-sm font-semibold text-gray-800">
+                            {selectedDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
+                          </h3>
+                          <p className="text-xs text-gray-400 mt-0.5">
+                            {getTransactionsForDate(selectedDate).length} transaction{getTransactionsForDate(selectedDate).length !== 1 ? 's' : ''}
+                          </p>
+                        </div>
+
+                        {getTransactionsForDate(selectedDate).filter(t => !t.isPredicted).length > 0 && (
+                          !isTransactionEditMode ? (
+                            <button
+                              onClick={() => setIsTransactionEditMode(true)}
+                              className="px-3 py-1.5 text-sm font-medium text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                            >
+                              Edit
+                            </button>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={selectAllDayTransactions}
+                                className="px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                              >
+                                {selectedTransactionIds.size === getTransactionsForDate(selectedDate).filter(t => !t.isPredicted).length
+                                  ? 'Deselect All'
+                                  : 'Select All'}
+                              </button>
+                              <button
+                                onClick={clearTransactionSelection}
+                                className="px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                              >
+                                Done
+                              </button>
+                            </div>
+                          )
+                        )}
+                      </div>
+
+                      {getTransactionsForDate(selectedDate).length > 0 ? (
+                        <div className="space-y-2">
+                          {getTransactionsForDate(selectedDate).map((transaction, idx) => {
+                            const transactionId = getTransactionId(transaction);
+                            const isSelected = selectedTransactionIds.has(transactionId);
+                            const isSelectableTransaction = !transaction.isPredicted;
+
+                            return (
+                              <div
+                                key={idx}
+                                onClick={() => isTransactionEditMode && isSelectableTransaction && toggleTransactionSelection(transactionId)}
+                                className={`p-3 rounded-lg border border-gray-100 border-l-4 transition-colors ${
+                                  isTransactionEditMode && isSelectableTransaction ? 'cursor-pointer' : ''
+                                } ${
+                                  isSelected
+                                    ? 'bg-red-50 border-l-red-400 border-gray-100'
+                                    : transaction.amount > 0
+                                      ? 'bg-emerald-50 border-l-emerald-300'
+                                      : 'bg-rose-50 border-l-rose-300'
+                                }`}
+                              >
+                                <div className="flex justify-between items-start mb-2">
+                                  {/* Checkbox in edit mode */}
+                                  {isTransactionEditMode && isSelectableTransaction && (
+                                    <div
+                                      className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors mr-3 flex-shrink-0 mt-1 ${
+                                        isSelected
+                                          ? 'bg-red-500 border-red-500'
+                                          : 'border-gray-300 bg-white hover:border-red-300'
+                                      }`}
+                                    >
+                                      {isSelected && (
+                                        <Check className="w-3 h-3 text-white" />
+                                      )}
+                                    </div>
+                                  )}
+
+                                  <div className="flex-1 min-w-0">
+                                    <div className={`text-sm font-medium flex items-center gap-1.5 flex-wrap ${isSelected ? 'text-red-900' : 'text-gray-900'}`}>
+                                      {transaction.description}
+                                      {transaction.type && (transaction.type.toLowerCase().includes('direct debit') || transaction.type.toLowerCase().includes('dd')) && (
+                                        <span className="text-xs bg-sky-50 text-sky-700 border border-sky-200 px-1.5 py-0.5 rounded font-medium">DD</span>
+                                      )}
+                                      {!transaction.isPredicted && isTransactionRecurring(transaction) && (
+                                        <span className="text-xs bg-indigo-50 text-indigo-600 border border-indigo-100 px-1.5 py-0.5 rounded flex items-center gap-1">
+                                          <Repeat className="w-2.5 h-2.5" />
+                                          recurring
+                                        </span>
+                                      )}
+                                    </div>
+                                    {transaction.time && (
+                                      <div className="text-xs text-gray-400 mt-0.5">
+                                        {transaction.time}
+                                      </div>
+                                    )}
+                                    {transaction.frequency && (
+                                      <div className="text-xs text-gray-400 mt-0.5">
+                                        {transaction.frequency}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                                    <div className={`text-sm font-semibold ${
+                                      isSelected ? 'text-red-700'
+                                        : transaction.amount > 0 ? 'text-emerald-700' : 'text-rose-700'
+                                    }`}>
+                                      {transaction.amount > 0 ? '+' : '-'}£{Math.abs(transaction.amount).toFixed(2)}
+                                    </div>
+                                    {/* Recurring button - only show when NOT in edit mode */}
+                                    {!isTransactionEditMode && !transaction.isPredicted && !transaction.type?.toLowerCase().includes('direct debit') && !transaction.type?.toLowerCase().includes('dd') && (
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openRecurringModal(transaction);
+                                        }}
+                                        className="text-gray-400 hover:text-indigo-500 p-1.5 hover:bg-indigo-50 rounded-lg transition-colors"
+                                        title="Mark as recurring"
+                                      >
+                                        <Repeat className="w-4 h-4" />
+                                      </button>
+                                    )}
+                                    {!isTransactionEditMode && !transaction.isPredicted && (transaction.type?.toLowerCase().includes('direct debit') || transaction.type?.toLowerCase().includes('dd')) && (
+                                      <div className="text-xs text-sky-600 bg-sky-50 border border-sky-100 px-2 py-1 rounded">
+                                        Auto-recurring
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {(transaction.type || transaction.category || transaction.reference) && (
+                                  <div className={`flex flex-wrap gap-1.5 mt-2 ${isTransactionEditMode && isSelectableTransaction ? 'ml-7' : ''}`}>
+                                    {transaction.type && (
+                                      <span className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded px-2 py-0.5">{transaction.type}</span>
+                                    )}
+                                    {transaction.category && (
+                                      <span className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded px-2 py-0.5">{transaction.category}</span>
+                                    )}
+                                    {transaction.reference && (
+                                      <span className="text-xs text-gray-400 bg-gray-50 border border-gray-100 rounded px-2 py-0.5">{transaction.reference}</span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+
+                          {/* Delete Action Bar - shown when items selected */}
+                          {selectedTransactionIds.size > 0 && (
+                            <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
+                              <span className="text-sm font-medium text-red-800">
+                                {selectedTransactionIds.size} transaction{selectedTransactionIds.size > 1 ? 's' : ''} selected
+                              </span>
+                              <button
+                                onClick={() => setShowDeleteConfirmModal(true)}
+                                className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors font-medium text-sm"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                                Delete Selected
+                              </button>
+                            </div>
+                          )}
+
+                          {selectedTransactionIds.size === 0 && (
+                            <div className="mt-3 p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                              <div className="space-y-1.5">
+                                <div className="flex justify-between items-center">
+                                  <span className="text-sm text-gray-500">Income</span>
+                                  <span className="text-sm font-semibold text-emerald-700">+£{getDayStats(selectedDate).income.toFixed(2)}</span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                  <span className="text-sm text-gray-500">Expenses</span>
+                                  <span className="text-sm font-semibold text-rose-700">-£{getDayStats(selectedDate).expenses.toFixed(2)}</span>
+                                </div>
+                                <div className="border-t border-gray-200 pt-1.5 flex justify-between items-center">
+                                  <span className="text-sm font-medium text-gray-600">Net</span>
+                                  <span className={`text-sm font-semibold ${getDayStats(selectedDate).net >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                                    {getDayStats(selectedDate).net >= 0 ? '+' : ''}£{getDayStats(selectedDate).net.toFixed(2)}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-gray-500 text-center py-8">No transactions on this date</p>
+                      )}
+                    </>
                   )}
                 </div>
               )}
             </>
           )}
 
-          {transactions.length === 0 && (
+          {transactions.length === 0 && orders.length === 0 && (
             <div className="text-center py-16">
               {storageLoading ? (
                 <>
