@@ -85,6 +85,7 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
   const [profiles, setProfiles]                       = useState([]);   // live list from localStorage
   const [showSaveProfile, setShowSaveProfile]         = useState(false);
   const [saveProfileName, setSaveProfileName]         = useState('');
+  const [customColumns, setCustomColumns]             = useState([]); // [{csv_col, label, as_filter, in_export}]
 
   // ── Shared ─────────────────────────────────────────────────────────────
   const [previewTransactions, setPreviewTransactions] = useState([]);
@@ -253,11 +254,17 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
       customer:'', product:'', amount:'', status:'', channel:'',
       ...profile.mapping
     });
+    setCustomColumns(profile.custom_columns || []);
   };
 
   const handleSaveProfileConfirm = () => {
     if (!saveProfileName.trim()) return;
-    saveProfile({ name: saveProfileName.trim(), mode: 'ecommerce', mapping: { ...ecomMappings } });
+    saveProfile({
+      name: saveProfileName.trim(),
+      mode: 'ecommerce',
+      mapping: { ...ecomMappings },
+      custom_columns: customColumns
+    });
     setSelectedEcomProfile(saveProfileName.trim());
     setSaveProfileName('');
     setShowSaveProfile(false);
@@ -310,6 +317,17 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
   // ── Parse ecommerce orders ──────────────────────────────────────────────
   const parseEcomOrders = () => {
     const orders = [], errors = [];
+
+    // Infer platform from selected profile name
+    let platform = 'other';
+    if (selectedEcomProfile) {
+      const profileLower = selectedEcomProfile.toLowerCase();
+      if (profileLower.includes('shopify')) platform = 'shopify';
+      else if (profileLower.includes('tiktok')) platform = 'tiktok';
+      else if (profileLower.includes('etsy')) platform = 'etsy';
+      else if (profileLower.includes('woocommerce')) platform = 'woo';
+    }
+
     csvData.forEach((row, index) => {
       try {
         const dateStr = row[ecomMappings.order_date];
@@ -322,18 +340,34 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
 
         const customer = ecomMappings.customer ? (row[ecomMappings.customer] || '') : '';
         const product  = ecomMappings.product  ? (row[ecomMappings.product]  || '') : '';
-        let description = customer || product || 'Order';
-        if (customer && product) description = `${customer} – ${product}`;
+
+        // Parse fulfil_date if mapped
+        let fulfilDate = null;
+        if (ecomMappings.fulfil_date && row[ecomMappings.fulfil_date]) {
+          const fulfilStr = row[ecomMappings.fulfil_date];
+          fulfilDate = parseDate(fulfilStr, dateFormat);
+          if (isNaN(fulfilDate.getTime())) fulfilDate = null;
+        }
+
+        // Populate custom fields
+        const customData = {};
+        customColumns.forEach(col => {
+          if (col.label && row[col.csv_col] !== undefined) {
+            customData[col.label] = row[col.csv_col];
+          }
+        });
 
         orders.push({
-          date:        parsedDate,
-          time:        ecomMappings.fulfil_date ? (row[ecomMappings.fulfil_date] || '') : '',
-          description: description.trim(),
-          amount,
-          type:        ecomMappings.status   ? (row[ecomMappings.status]   || '') : '',
-          category:    ecomMappings.channel  ? (row[ecomMappings.channel]  || '') : '',
-          reference:   ecomMappings.order_id ? (row[ecomMappings.order_id] || '') : '',
-          balance:     null,
+          order_id:    ecomMappings.order_id ? (row[ecomMappings.order_id] || '') : '',
+          order_date:  parsedDate,
+          fulfil_date: fulfilDate,
+          customer:    customer,
+          product:     product,
+          amount:      amount,
+          status:      ecomMappings.status  ? (row[ecomMappings.status]  || '') : '',
+          platform:    platform,
+          channel:     ecomMappings.channel ? (row[ecomMappings.channel] || '') : '',
+          custom:      customData,
           sourceFile:  file.name
         });
       } catch (e) { errors.push({ row: index + 1, error: e.message }); }
@@ -735,6 +769,100 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
               </select>
             </div>
           ))}
+        </div>
+
+        {/* Additional columns */}
+        <div className="mt-6 pt-4 border-t border-gray-200">
+          <p className="text-sm font-medium text-gray-700 mb-3">Additional columns</p>
+          <p className="text-xs text-gray-500 mb-3">
+            Map extra columns from your CSV that aren't covered by the standard fields above.
+          </p>
+
+          {(() => {
+            const assignedCols = new Set(Object.values(ecomMappings).filter(v => v));
+            const unassignedCols = csvHeaders.filter(h => !assignedCols.has(h));
+
+            return (
+              <div className="space-y-2">
+                {customColumns.map((col, idx) => (
+                  <div key={idx} className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg">
+                    <div className="flex-1 grid grid-cols-3 gap-2">
+                      <div className="text-sm text-gray-600 px-2 py-1 bg-white rounded border border-gray-200">
+                        {col.csv_col}
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Custom label"
+                        value={col.label}
+                        onChange={(e) => {
+                          const newCols = [...customColumns];
+                          newCols[idx].label = e.target.value;
+                          setCustomColumns(newCols);
+                        }}
+                        className="px-2 py-1 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-indigo-500"
+                      />
+                      <div className="flex items-center gap-3 text-xs">
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={col.as_filter}
+                            onChange={(e) => {
+                              const newCols = [...customColumns];
+                              newCols[idx].as_filter = e.target.checked;
+                              setCustomColumns(newCols);
+                            }}
+                            className="w-3.5 h-3.5 text-indigo-600 rounded"
+                          />
+                          <span className="text-gray-600">Filter</span>
+                        </label>
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={col.in_export}
+                            onChange={(e) => {
+                              const newCols = [...customColumns];
+                              newCols[idx].in_export = e.target.checked;
+                              setCustomColumns(newCols);
+                            }}
+                            className="w-3.5 h-3.5 text-indigo-600 rounded"
+                          />
+                          <span className="text-gray-600">Export</span>
+                        </label>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setCustomColumns(customColumns.filter((_, i) => i !== idx))}
+                      className="p-1 text-gray-400 hover:text-red-500 rounded"
+                      title="Remove"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+
+                {unassignedCols.length > 0 && (
+                  <button
+                    onClick={() => {
+                      const nextCol = unassignedCols.find(col =>
+                        !customColumns.some(c => c.csv_col === col)
+                      );
+                      if (nextCol) {
+                        setCustomColumns([...customColumns, {
+                          csv_col: nextCol,
+                          label: '',
+                          as_filter: false,
+                          in_export: true
+                        }]);
+                      }
+                    }}
+                    className="text-sm text-indigo-600 hover:text-indigo-800 hover:underline"
+                  >
+                    + Map additional column
+                  </button>
+                )}
+              </div>
+            );
+          })()}
         </div>
 
         {/* Save as profile */}

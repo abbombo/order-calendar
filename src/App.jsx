@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { flushSync } from 'react-dom';
-import { Upload, Calendar, TrendingDown, TrendingUp, ChevronLeft, ChevronRight, Filter, X, Download, LogIn, UserPlus, LogOut, User, RefreshCw, Sparkles, Tag, Repeat, XCircle, Edit, AlertTriangle, Folder, Trash2, Info, Columns, Check } from 'lucide-react';
+import { Upload, Calendar, TrendingDown, TrendingUp, ChevronLeft, ChevronRight, Filter, X, Download, LogIn, UserPlus, LogOut, User, RefreshCw, Sparkles, Tag, Repeat, XCircle, Edit, AlertTriangle, Folder, Trash2, Info, Columns, Check, CreditCard, ShoppingBag } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import ColumnMapper from './ColumnMapper';
 import { parseBankCSV, BANK_FORMATS } from './bankFormats';
@@ -51,9 +51,15 @@ function App() {
 
   // Ecommerce order state
   const [orders, setOrders] = useState([]);          // ecommerce orders
-  const [dataMode, setDataMode] = useState('bank');   // 'bank' | 'ecommerce'
+  const [dataMode, setDataMode] = useState(() => {
+    // Load from localStorage on init
+    const stored = localStorage.getItem('data_mode');
+    return stored === 'ecommerce' ? 'ecommerce' : null;
+  });   // 'bank' | 'ecommerce' | null
   const [orderDateField, setOrderDateField] = useState('order'); // 'order' | 'fulfil'
   const [activePlatforms, setActivePlatforms] = useState(new Set()); // empty = show all
+  const [activeStatus, setActiveStatus] = useState('all'); // 'all' | 'paid' | 'pending' | 'refunded' | 'cancelled'
+  const [customFilters, setCustomFilters] = useState({}); // { columnLabel: Set(values) }
   
   // Filter state
   const [showFilterMenu, setShowFilterMenu] = useState(false);
@@ -573,6 +579,17 @@ function App() {
     }
   };
 
+  // Switch Mode — returns user to mode selector
+  const handleSwitchMode = () => {
+    if (!window.confirm('Switch data mode? This will clear all loaded data (mapping profiles will be kept).')) return;
+    setTransactions([]);
+    setOrders([]);
+    setLoadedFiles([]);
+    setDataMode(null);
+    localStorage.removeItem('data_mode');
+    setActivePlatforms(new Set());
+    setActiveFilters({});
+  };
 
   const MAX_FILE_SIZE_MB = 50;
 
@@ -1414,12 +1431,12 @@ function App() {
     transactionsToExport.sort((a, b) => a.date - b.date);
 
     if (transactionsToExport.length === 0) {
-      alert('No transactions to export. Please select at least one option.');
+      alert(`No ${dataMode === 'ecommerce' ? 'orders' : 'transactions'} to export. Please select at least one option.`);
       return;
     }
 
     let content, mimeType, extension;
-    const baseFilename = `transactions_${exportConfig.includeHistoric ? 'historic' : ''}${exportConfig.includeHistoric && exportConfig.includePredicted ? '_and_' : ''}${exportConfig.includePredicted ? 'predicted' : ''}_${new Date().toISOString().split('T')[0]}`;
+    const baseFilename = `${dataMode === 'ecommerce' ? 'orders' : 'transactions'}_${exportConfig.includeHistoric ? 'historic' : ''}${exportConfig.includeHistoric && exportConfig.includePredicted ? '_and_' : ''}${exportConfig.includePredicted ? 'predicted' : ''}_${new Date().toISOString().split('T')[0]}`;
 
     switch (exportConfig.format) {
       case 'ics': {
@@ -1925,16 +1942,12 @@ function App() {
 
     // ── Ecommerce branch ──────────────────────────────────────────────────────
     if (metadata?.mapperMode === 'ecommerce') {
-      const platformMap = {
-        'Shopify': 'shopify', 'TikTok Shop': 'tiktok',
-        'Etsy': 'etsy', 'WooCommerce': 'woo'
-      };
-      const platform = platformMap[metadata.bankName] || 'other';
-      const enriched = mappedTransactions.map(t => ({
-        ...t,
-        isOrder: true,
-        platform,
-        fulfil_date: t.time ? (() => { try { const d = new Date(t.time); return isNaN(d.getTime()) ? null : d; } catch { return null; } })() : null,
+      // Orders are already in the correct shape from ColumnMapper:
+      // { order_id, order_date, fulfil_date, customer, product, amount, status, platform, channel, custom, sourceFile }
+      // We need to add a `date` field for compatibility with calendar rendering
+      const enriched = mappedTransactions.map(o => ({
+        ...o,
+        date: o.order_date || o.date, // Ensure `date` field exists for calendar
       }));
       const mode = columnMapperMode;
       setUploadedFileName(prev => prev.includes(fileName) ? prev : [...prev, fileName]);
@@ -1942,11 +1955,16 @@ function App() {
       setOrders(prev => {
         if (mode === 'replace') return enriched;
         const combined = [...prev, ...enriched];
+        // Deduplicate by order_id + sourceFile, or by date + amount + sourceFile if no order_id
         return combined.filter((o, i, arr) =>
-          arr.findIndex(x => x.date.getTime() === o.date.getTime() && x.description === o.description && x.amount === o.amount && x.sourceFile === o.sourceFile) === i
+          arr.findIndex(x =>
+            (o.order_id && x.order_id === o.order_id && x.sourceFile === o.sourceFile) ||
+            (!o.order_id && x.date.getTime() === o.date.getTime() && x.amount === o.amount && x.sourceFile === o.sourceFile)
+          ) === i
         );
       });
       setDataMode('ecommerce');
+      localStorage.setItem('data_mode', 'ecommerce');
       if (enriched.length > 0) {
         const last = enriched.reduce((a, b) => a.date > b.date ? a : b);
         setCurrentDate(new Date(last.date.getFullYear(), last.date.getMonth(), 1));
@@ -1965,6 +1983,7 @@ function App() {
 
     applyParsedTransactions(mappedTransactions, fileName, mode);
     setDataMode('bank');
+    localStorage.setItem('data_mode', 'bank');
 
     // Close the column mapper and clear file ref BEFORE opening next
     setShowColumnMapper(false);
@@ -2358,12 +2377,21 @@ function App() {
     shopify: 'Shopify', tiktok: 'TikTok Shop', etsy: 'Etsy', woo: 'WooCommerce', other: 'Other',
   };
 
-  // Filtered orders (respects activePlatforms)
+  // Filtered orders (respects activePlatforms, activeStatus, and customFilters)
   const getFilteredOrders = () => {
     let filtered = orders.filter(o => loadedFiles.includes(o.sourceFile));
     if (activePlatforms.size > 0) {
       filtered = filtered.filter(o => activePlatforms.has(o.platform));
     }
+    if (activeStatus !== 'all') {
+      filtered = filtered.filter(o => (o.status || '').toLowerCase() === activeStatus);
+    }
+    // Apply custom column filters
+    Object.entries(customFilters).forEach(([label, valueSet]) => {
+      if (valueSet.size > 0) {
+        filtered = filtered.filter(o => valueSet.has(o.custom?.[label]));
+      }
+    });
     return filtered;
   };
 
@@ -2401,6 +2429,30 @@ function App() {
   const getPresentPlatforms = () => {
     const all = orders.filter(o => loadedFiles.includes(o.sourceFile));
     return [...new Set(all.map(o => o.platform))].filter(Boolean);
+  };
+
+  // Get custom filter options from loaded orders
+  const getCustomFilterOptions = () => {
+    const all = orders.filter(o => loadedFiles.includes(o.sourceFile));
+    const filterOptions = {};
+
+    all.forEach(order => {
+      if (order.custom) {
+        Object.entries(order.custom).forEach(([label, value]) => {
+          if (!filterOptions[label]) filterOptions[label] = new Set();
+          if (value) filterOptions[label].add(value);
+        });
+      }
+    });
+
+    // Only return labels with 2+ unique values
+    const result = {};
+    Object.entries(filterOptions).forEach(([label, valueSet]) => {
+      if (valueSet.size >= 2) {
+        result[label] = [...valueSet].sort();
+      }
+    });
+    return result;
   };
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -2579,6 +2631,85 @@ function App() {
               <p className="text-center">
                 <strong>Demo mode:</strong> Supabase not configured — enter any email to continue.
               </p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Mode Selector Screen — shown when no data is loaded
+  if (!dataMode && transactions.length === 0 && orders.length === 0) {
+    const fileInputRef = useRef(null);
+
+    const handleModeChoice = (mode) => {
+      setDataMode(mode);
+      localStorage.setItem('data_mode', mode);
+      // Open file upload dialog
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.csv';
+      input.multiple = true;
+      input.onchange = handleMultiFileUpload;
+      input.click();
+    };
+
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-600 to-indigo-800 flex items-center justify-center p-4">
+        <div className="max-w-4xl w-full">
+          <div className="text-center mb-8">
+            <Calendar className="w-16 h-16 text-white mx-auto mb-4" />
+            <h1 className="text-4xl font-bold text-white mb-2">Order Calendar</h1>
+            <p className="text-blue-100">Choose your data type to get started</p>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-6">
+            {/* Bank Transactions Card */}
+            <div
+              onClick={() => handleModeChoice('bank')}
+              className="bg-white rounded-xl shadow-lg p-8 cursor-pointer transition-all hover:shadow-2xl hover:scale-105 border-2 border-transparent hover:border-indigo-500"
+            >
+              <div className="flex flex-col items-center text-center">
+                <div className="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mb-6">
+                  <CreditCard className="w-10 h-10 text-blue-600" />
+                </div>
+                <h2 className="text-2xl font-bold text-gray-800 mb-3">Bank transactions</h2>
+                <p className="text-gray-600 mb-4">Visualise spending from bank or credit card CSV exports</p>
+                <p className="text-sm text-gray-400 mb-6">Monzo · Starling · Barclays · HSBC · Amex</p>
+                <button className="px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors">
+                  Upload bank CSV
+                </button>
+              </div>
+            </div>
+
+            {/* E-commerce Orders Card */}
+            <div
+              onClick={() => handleModeChoice('ecommerce')}
+              className="bg-white rounded-xl shadow-lg p-8 cursor-pointer transition-all hover:shadow-2xl hover:scale-105 border-2 border-transparent hover:border-indigo-500"
+            >
+              <div className="flex flex-col items-center text-center">
+                <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center mb-6">
+                  <ShoppingBag className="w-10 h-10 text-emerald-600" />
+                </div>
+                <h2 className="text-2xl font-bold text-gray-800 mb-3">E-commerce orders</h2>
+                <p className="text-gray-600 mb-4">Track orders, revenue and fulfilment across platforms</p>
+                <p className="text-sm text-gray-400 mb-6">Shopify · TikTok Shop · Etsy · WooCommerce</p>
+                <button className="px-6 py-3 bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 transition-colors">
+                  Upload orders CSV
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {isLoggedIn && (
+            <div className="text-center mt-8">
+              <button
+                onClick={handleLogout}
+                className="text-white hover:text-blue-100 text-sm flex items-center gap-2 mx-auto"
+              >
+                <LogOut className="w-4 h-4" />
+                Logout
+              </button>
             </div>
           )}
         </div>
@@ -2809,6 +2940,13 @@ function App() {
                       >
                         <Folder className="w-4 h-4 text-gray-400" />
                         File Manager
+                      </button>
+                      <button
+                        onClick={() => { handleSwitchMode(); setShowProfileMenu(false); }}
+                        className="flex items-center gap-2 w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                      >
+                        <RefreshCw className="w-4 h-4 text-gray-400" />
+                        Switch mode
                       </button>
                     </div>
                     <div className="py-1 border-t border-gray-100">
@@ -3054,7 +3192,7 @@ function App() {
                 <p className="text-xs text-gray-500">
                   📅 {new Date(Math.min(...displayTransactions.map(t => t.date.getTime()))).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })} – {new Date(Math.max(...displayTransactions.map(t => t.date.getTime()))).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}
                   <span className="text-gray-300 mx-1.5">•</span>
-                  {`${displayTransactions.length} orders${hasActiveFilters() ? ' (filtered)' : ''}`}
+                  {`${displayTransactions.length} ${dataMode === 'ecommerce' ? 'orders' : 'transactions'}${hasActiveFilters() ? ' (filtered)' : ''}`}
                 </p>
               </div>
             );
@@ -3394,6 +3532,70 @@ function App() {
                 </div>
               )}
 
+              {/* Status filter pills — ecommerce mode only */}
+              {isEcomMode && (
+                <div data-no-export className="flex gap-2 mb-3 flex-wrap">
+                  <button
+                    onClick={() => setActiveStatus('all')}
+                    className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                      activeStatus === 'all' ? 'bg-gray-800 text-white border-gray-800' : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+                    }`}
+                  >All</button>
+                  {[
+                    { key: 'paid', label: 'Paid', color: 'bg-emerald-500' },
+                    { key: 'completed', label: 'Completed', color: 'bg-emerald-500' },
+                    { key: 'pending', label: 'Pending', color: 'bg-amber-500' },
+                    { key: 'refunded', label: 'Refunded', color: 'bg-blue-500' },
+                    { key: 'cancelled', label: 'Cancelled', color: 'bg-red-500' }
+                  ].map(({ key, label, color }) => (
+                    <button
+                      key={key}
+                      onClick={() => setActiveStatus(key)}
+                      className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                        activeStatus === key ? `${color} text-white border-transparent` : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+                      }`}
+                    >{label}</button>
+                  ))}
+                </div>
+              )}
+
+              {/* Custom filter pills — ecommerce mode only, dynamic based on custom columns */}
+              {isEcomMode && (() => {
+                const customFilterOpts = getCustomFilterOptions();
+                return Object.keys(customFilterOpts).length > 0 && Object.entries(customFilterOpts).map(([label, values]) => (
+                  <div key={label} data-no-export className="mb-3">
+                    <p className="text-xs font-medium text-gray-500 mb-1.5">{label}</p>
+                    <div className="flex gap-2 flex-wrap">
+                      <button
+                        onClick={() => setCustomFilters(prev => ({ ...prev, [label]: new Set() }))}
+                        className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                          !customFilters[label] || customFilters[label].size === 0
+                            ? 'bg-gray-800 text-white border-gray-800'
+                            : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+                        }`}
+                      >All</button>
+                      {values.map(value => (
+                        <button
+                          key={value}
+                          onClick={() => setCustomFilters(prev => {
+                            const existing = prev[label] || new Set();
+                            const next = new Set(existing);
+                            if (next.has(value)) next.delete(value);
+                            else next.add(value);
+                            return { ...prev, [label]: next };
+                          })}
+                          className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                            customFilters[label]?.has(value)
+                              ? 'bg-indigo-500 text-white border-transparent'
+                              : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+                          }`}
+                        >{value}</button>
+                      ))}
+                    </div>
+                  </div>
+                ));
+              })()}
+
               {/* Order date / Fulfilment date toggle — ecommerce mode only */}
               {isEcomMode && (
                 <div data-no-export className="flex gap-2 mb-3">
@@ -3505,7 +3707,8 @@ function App() {
                     (() => {
                       const dayOrds = getOrdersForDay(selectedDate);
                       const STATUS_COLORS = {
-                        paid: 'bg-green-100 text-green-800',
+                        paid: 'bg-emerald-100 text-emerald-800',
+                        completed: 'bg-emerald-100 text-emerald-800',
                         pending: 'bg-amber-100 text-amber-800',
                         refunded: 'bg-blue-100 text-blue-800',
                         cancelled: 'bg-red-100 text-red-800',
@@ -3525,7 +3728,7 @@ function App() {
                               <thead className="bg-gray-50">
                                 <tr>
                                   <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Order ID</th>
-                                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Customer / Product</th>
+                                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Product</th>
                                   <th className="px-3 py-2 text-right text-xs font-medium text-gray-500">Amount</th>
                                   <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Status</th>
                                   <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Platform</th>
@@ -3533,15 +3736,15 @@ function App() {
                               </thead>
                               <tbody className="divide-y divide-gray-100">
                                 {dayOrds.map((o, i) => {
-                                  const statusKey = (o.type || '').toLowerCase();
+                                  const statusKey = (o.status || '').toLowerCase();
                                   const badgeClass = STATUS_COLORS[statusKey] || 'bg-gray-100 text-gray-700';
                                   return (
                                     <tr key={i} className="hover:bg-gray-50">
-                                      <td className="px-3 py-2 text-gray-600 font-mono text-xs">{o.reference || '—'}</td>
-                                      <td className="px-3 py-2 text-gray-900 max-w-[140px] truncate">{o.description}</td>
+                                      <td className="px-3 py-2 text-gray-600 font-mono text-xs">{o.order_id || '—'}</td>
+                                      <td className="px-3 py-2 text-gray-900 max-w-[140px] truncate" title={o.product}>{o.product || o.customer || '—'}</td>
                                       <td className="px-3 py-2 text-right font-medium text-gray-900">£{Math.abs(o.amount).toFixed(2)}</td>
                                       <td className="px-3 py-2">
-                                        {o.type ? <span className={`inline-flex px-1.5 py-0.5 rounded text-xs font-medium ${badgeClass}`}>{o.type}</span> : <span className="text-gray-400">—</span>}
+                                        {o.status ? <span className={`inline-flex px-1.5 py-0.5 rounded text-xs font-medium ${badgeClass}`}>{o.status}</span> : <span className="text-gray-400">—</span>}
                                       </td>
                                       <td className="px-3 py-2">
                                         <span className="inline-flex items-center gap-1 text-xs text-gray-600">
@@ -4078,10 +4281,10 @@ function App() {
             <div className="px-5 py-4">
               <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs">
                 <p className="text-amber-800 font-medium mb-1">
-                  You already have transactions loaded
+                  You already have {dataMode === 'ecommerce' ? 'orders' : 'transactions'} loaded
                 </p>
                 <p className="text-amber-700">
-                  {transactions.length} transactions from {loadedFiles.join(', ')}
+                  {dataMode === 'ecommerce' ? orders.length : transactions.length} {dataMode === 'ecommerce' ? 'orders' : 'transactions'} from {loadedFiles.join(', ')}
                 </p>
               </div>
 
@@ -4100,10 +4303,10 @@ function App() {
                     <div className="flex-1">
                       <div className="font-medium text-gray-800 mb-1">Replace Existing Data</div>
                       <div className="text-xs text-gray-500">
-                        Clear all current transactions and load only the new file
+                        Clear all current {dataMode === 'ecommerce' ? 'orders' : 'transactions'} and load only the new file
                       </div>
                       <div className="text-xs text-red-600 mt-1 font-medium">
-                        This will delete {transactions.length} transactions and {manualRecurring.length} manual recurring rules
+                        This will delete {dataMode === 'ecommerce' ? orders.length : transactions.length} {dataMode === 'ecommerce' ? 'orders' : 'transactions'}{dataMode === 'bank' && manualRecurring.length > 0 ? ` and ${manualRecurring.length} manual recurring rules` : ''}
                       </div>
                     </div>
                   </div>
@@ -4119,10 +4322,10 @@ function App() {
                     <div className="flex-1">
                       <div className="font-medium text-gray-800 mb-1">Merge with Existing Data</div>
                       <div className="text-xs text-gray-500">
-                        Combine new transactions with current data
+                        Combine new {dataMode === 'ecommerce' ? 'orders' : 'transactions'} with current data
                       </div>
                       <div className="text-xs text-emerald-600 mt-1 font-medium">
-                        Keeps existing transactions and manual recurring rules
+                        Keeps existing {dataMode === 'ecommerce' ? 'orders' : 'transactions'}{dataMode === 'bank' ? ' and manual recurring rules' : ''}
                       </div>
                       <div className="text-xs text-gray-400 mt-1">
                         Duplicates are automatically removed
@@ -4155,7 +4358,7 @@ function App() {
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
               <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
                 <Download className="w-4 h-4 text-gray-400" />
-                Export Transactions
+                Export {dataMode === 'ecommerce' ? 'Orders' : 'Transactions'}
               </h3>
               <button
                 onClick={() => setShowExportModal(false)}
