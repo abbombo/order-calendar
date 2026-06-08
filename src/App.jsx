@@ -2640,8 +2640,6 @@ function App() {
 
   // Mode Selector Screen — shown when no data is loaded
   if (!dataMode && transactions.length === 0 && orders.length === 0) {
-    const fileInputRef = useRef(null);
-
     const handleModeChoice = (mode) => {
       setDataMode(mode);
       localStorage.setItem('data_mode', mode);
