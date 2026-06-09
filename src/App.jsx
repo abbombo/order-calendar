@@ -1134,6 +1134,35 @@ function App() {
     return predictions;
   };
 
+  // Rebuild sidebar filter options for ecommerce mode whenever orders or loaded files change
+  useEffect(() => {
+    if (dataMode !== 'ecommerce' || orders.length === 0) return;
+    const loaded = orders.filter(o => loadedFiles.includes(o.sourceFile));
+
+    const opts = {};
+    const addVal = (key, val) => {
+      const v = String(val ?? '').trim();
+      if (!v) return;
+      if (!opts[key]) opts[key] = new Set();
+      opts[key].add(v);
+    };
+
+    loaded.forEach(o => {
+      if (o.status)   addVal('status',   o.status);
+      if (o.platform) addVal('platform', o.platform);
+      if (o.channel)  addVal('channel',  o.channel);
+      if (o.customer) addVal('customer', o.customer);
+      if (o.custom) {
+        Object.entries(o.custom).forEach(([label, val]) => addVal(label, val));
+      }
+    });
+
+    const result = {};
+    Object.entries(opts).forEach(([k, s]) => { result[k] = [...s].sort(); });
+    setAvailableFilterOptions(result);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, loadedFiles, dataMode]);
+
   // Update predictions when transactions or manual recurring changes
   useEffect(() => {
     if (transactions.length > 0) {
@@ -2407,7 +2436,7 @@ function App() {
     shopify: 'Shopify', tiktok: 'TikTok Shop', etsy: 'Etsy', woo: 'WooCommerce', other: 'Other',
   };
 
-  // Filtered orders (respects activePlatforms, activeStatus, and customFilters)
+  // Filtered orders (respects activePlatforms, activeStatus, sidebar activeFilters, and customFilters)
   const getFilteredOrders = () => {
     let filtered = orders.filter(o => loadedFiles.includes(o.sourceFile));
     if (activePlatforms.size > 0) {
@@ -2416,11 +2445,17 @@ function App() {
     if (activeStatus !== 'all') {
       filtered = filtered.filter(o => (o.status || '').toLowerCase() === activeStatus);
     }
-    // Apply custom column filters
-    Object.entries(customFilters).forEach(([label, valueSet]) => {
-      if (valueSet.size > 0) {
-        filtered = filtered.filter(o => valueSet.has(o.custom?.[label]));
-      }
+    // Sidebar activeFilters — standard fields (status, platform, channel, customer)
+    // plus custom column labels stored in o.custom
+    const activeFilterKeys = Object.keys(activeFilters).filter(k => activeFilters[k]?.length > 0);
+    activeFilterKeys.forEach(key => {
+      const values = activeFilters[key];
+      filtered = filtered.filter(o => {
+        // standard fields live directly on the order
+        if (key in o) return values.includes(String(o[key] ?? ''));
+        // custom fields live in o.custom
+        return values.includes(String(o.custom?.[key] ?? ''));
+      });
     });
     return filtered;
   };
@@ -3053,8 +3088,8 @@ function App() {
                 <p className="text-xs text-gray-400 mt-1.5">{filterLogic === 'OR' ? 'Match any filter' : 'Match all filters'}</p>
               </div>
 
-              {/* Amount */}
-              <div>
+              {/* Amount — bank mode only */}
+              {!isEcomMode && <div>
                 <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Amount</p>
                 <div className="space-y-2">
                   <select
@@ -3079,10 +3114,10 @@ function App() {
                     />
                   )}
                 </div>
-              </div>
+              </div>}
 
-              {/* Only show income or expense */}
-              <div>
+              {/* Only show income or expense — bank mode only */}
+              {!isEcomMode && <div>
                 <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Only show income or expense</p>
                 <div className="flex gap-1.5">
                   <button
@@ -3098,9 +3133,9 @@ function App() {
                     <TrendingDown className="w-3 h-3" /> Expense
                   </button>
                 </div>
-              </div>
+              </div>}
 
-              {/* Category filters */}
+              {/* Column filters (bank: type/category/etc; ecommerce: status/platform/channel/customer/custom) */}
               {Object.keys(availableFilterOptions).map(filterType => {
                 const filteredOptions = getFilteredOptions(filterType);
                 if (filterSearchQuery && filteredOptions.length === 0) return null;
@@ -3535,43 +3570,6 @@ function App() {
                   ))}
                 </div>
               )}
-
-              {/* Custom filter pills — ecommerce mode only, dynamic based on custom columns */}
-              {isEcomMode && (() => {
-                const customFilterOpts = getCustomFilterOptions();
-                return Object.keys(customFilterOpts).length > 0 && Object.entries(customFilterOpts).map(([label, values]) => (
-                  <div key={label} data-no-export className="mb-3">
-                    <p className="text-xs font-medium text-gray-500 mb-1.5">{label}</p>
-                    <div className="flex gap-2 flex-wrap">
-                      <button
-                        onClick={() => setCustomFilters(prev => ({ ...prev, [label]: new Set() }))}
-                        className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                          !customFilters[label] || customFilters[label].size === 0
-                            ? 'bg-gray-800 text-white border-gray-800'
-                            : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
-                        }`}
-                      >All</button>
-                      {values.map(value => (
-                        <button
-                          key={value}
-                          onClick={() => setCustomFilters(prev => {
-                            const existing = prev[label] || new Set();
-                            const next = new Set(existing);
-                            if (next.has(value)) next.delete(value);
-                            else next.add(value);
-                            return { ...prev, [label]: next };
-                          })}
-                          className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                            customFilters[label]?.has(value)
-                              ? 'bg-indigo-500 text-white border-transparent'
-                              : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
-                          }`}
-                        >{value}</button>
-                      ))}
-                    </div>
-                  </div>
-                ));
-              })()}
 
               {/* Order date / Fulfilment date toggle — ecommerce mode only */}
               {isEcomMode && (
