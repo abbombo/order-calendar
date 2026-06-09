@@ -72,6 +72,7 @@ function App() {
 
   // Ecommerce order state
   const [orders, setOrders] = useState([]);          // ecommerce orders
+  const [ecomFilterCols, setEcomFilterCols] = useState([]); // custom column labels marked as_filter
   const [dataMode, setDataMode] = useState(() => {
     // Load from localStorage on init
     const stored = localStorage.getItem('data_mode');
@@ -610,6 +611,7 @@ function App() {
     localStorage.removeItem('data_mode');
     setActivePlatforms(new Set());
     setActiveFilters({});
+    setEcomFilterCols([]);
   };
 
   const MAX_FILE_SIZE_MB = 50;
@@ -1986,6 +1988,9 @@ function App() {
       });
       setDataMode('ecommerce');
       localStorage.setItem('data_mode', 'ecommerce');
+      if (metadata?.filterCols?.length > 0) {
+        setEcomFilterCols(prev => [...new Set([...prev, ...metadata.filterCols])]);
+      }
       if (enriched.length > 0) {
         const last = enriched.reduce((a, b) => a.date > b.date ? a : b);
         setCurrentDate(new Date(last.date.getFullYear(), last.date.getMonth(), 1));
@@ -2456,26 +2461,25 @@ function App() {
     return [...new Set(all.map(o => o.platform))].filter(Boolean);
   };
 
-  // Get custom filter options from loaded orders
+  // Get custom filter options from loaded orders (only columns flagged as_filter)
   const getCustomFilterOptions = () => {
+    if (ecomFilterCols.length === 0) return {};
     const all = orders.filter(o => loadedFiles.includes(o.sourceFile));
     const filterOptions = {};
 
     all.forEach(order => {
       if (order.custom) {
         Object.entries(order.custom).forEach(([label, value]) => {
+          if (!ecomFilterCols.includes(label)) return;
           if (!filterOptions[label]) filterOptions[label] = new Set();
-          if (value) filterOptions[label].add(value);
+          if (value !== undefined && value !== '') filterOptions[label].add(String(value));
         });
       }
     });
 
-    // Only return labels with 2+ unique values
     const result = {};
     Object.entries(filterOptions).forEach(([label, valueSet]) => {
-      if (valueSet.size >= 2) {
-        result[label] = [...valueSet].sort();
-      }
+      if (valueSet.size > 0) result[label] = [...valueSet].sort();
     });
     return result;
   };

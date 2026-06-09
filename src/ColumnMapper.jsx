@@ -431,7 +431,8 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
         totalRows:      csvData.length,
         parsedCount:    orders.length,
         sourceFile:     file.name,
-        mapperMode:     'ecommerce'
+        mapperMode:     'ecommerce',
+        filterCols:     customColumns.filter(c => c.as_filter && c.label).map(c => c.label),
       });
       return;
     }
@@ -780,27 +781,48 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
 
           {(() => {
             const assignedCols = new Set(Object.values(ecomMappings).filter(v => v));
-            const unassignedCols = csvHeaders.filter(h => !assignedCols.has(h));
+            const alreadyCustom = new Set(customColumns.map(c => c.csv_col));
 
             return (
               <div className="space-y-2">
                 {customColumns.map((col, idx) => (
                   <div key={idx} className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg">
                     <div className="flex-1 grid grid-cols-3 gap-2">
-                      <div className="text-sm text-gray-600 px-2 py-1 bg-white rounded border border-gray-200">
-                        {col.csv_col}
-                      </div>
+                      {/* CSV column selector */}
+                      <select
+                        value={col.csv_col}
+                        onChange={(e) => {
+                          const newCols = [...customColumns];
+                          newCols[idx] = { ...newCols[idx], csv_col: e.target.value };
+                          setCustomColumns(newCols);
+                        }}
+                        className="px-2 py-1 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-indigo-500"
+                      >
+                        <option value="">-- Select column --</option>
+                        {csvHeaders.map(h => (
+                          // show all headers; dim ones already used elsewhere
+                          <option
+                            key={h}
+                            value={h}
+                            disabled={assignedCols.has(h) || (alreadyCustom.has(h) && h !== col.csv_col)}
+                          >
+                            {h}{assignedCols.has(h) ? ' (mapped)' : alreadyCustom.has(h) && h !== col.csv_col ? ' (used)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                      {/* Display label */}
                       <input
                         type="text"
-                        placeholder="Custom label"
+                        placeholder="Display label"
                         value={col.label}
                         onChange={(e) => {
                           const newCols = [...customColumns];
-                          newCols[idx].label = e.target.value;
+                          newCols[idx] = { ...newCols[idx], label: e.target.value };
                           setCustomColumns(newCols);
                         }}
                         className="px-2 py-1 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-indigo-500"
                       />
+                      {/* Filter / Export toggles */}
                       <div className="flex items-center gap-3 text-xs">
                         <label className="flex items-center gap-1 cursor-pointer">
                           <input
@@ -808,7 +830,7 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
                             checked={col.as_filter}
                             onChange={(e) => {
                               const newCols = [...customColumns];
-                              newCols[idx].as_filter = e.target.checked;
+                              newCols[idx] = { ...newCols[idx], as_filter: e.target.checked };
                               setCustomColumns(newCols);
                             }}
                             className="w-3.5 h-3.5 text-indigo-600 rounded"
@@ -821,7 +843,7 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
                             checked={col.in_export}
                             onChange={(e) => {
                               const newCols = [...customColumns];
-                              newCols[idx].in_export = e.target.checked;
+                              newCols[idx] = { ...newCols[idx], in_export: e.target.checked };
                               setCustomColumns(newCols);
                             }}
                             className="w-3.5 h-3.5 text-indigo-600 rounded"
@@ -840,26 +862,12 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
                   </div>
                 ))}
 
-                {unassignedCols.length > 0 && (
-                  <button
-                    onClick={() => {
-                      const nextCol = unassignedCols.find(col =>
-                        !customColumns.some(c => c.csv_col === col)
-                      );
-                      if (nextCol) {
-                        setCustomColumns([...customColumns, {
-                          csv_col: nextCol,
-                          label: '',
-                          as_filter: false,
-                          in_export: true
-                        }]);
-                      }
-                    }}
-                    className="text-sm text-indigo-600 hover:text-indigo-800 hover:underline"
-                  >
-                    + Map additional column
-                  </button>
-                )}
+                <button
+                  onClick={() => setCustomColumns([...customColumns, { csv_col: '', label: '', as_filter: false, in_export: true }])}
+                  className="text-sm text-indigo-600 hover:text-indigo-800 hover:underline"
+                >
+                  + Map additional column
+                </button>
               </div>
             );
           })()}
