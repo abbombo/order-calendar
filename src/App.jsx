@@ -3166,7 +3166,7 @@ function App() {
             </div>
           )}
 
-          {(isEcomMode ? filteredOrders.length > 0 : getFilteredTransactions().length > 0) && (
+          {(isEcomMode ? periodOrders.length > 0 : getFilteredTransactions().length > 0) && (
             <>
               {/* Stats Cards */}
               {isEcomMode ? (
@@ -3438,6 +3438,17 @@ function App() {
                     );
                   })()}
                   </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Calendar always visible when data is loaded — even if filters show 0 results */}
+          {(isEcomMode || transactions.length > 0) && (
+            <>
+              {isEcomMode && filteredOrders.length === 0 && orders.length > 0 && (
+                <div className="text-center py-6 text-sm text-gray-400">
+                  No orders match the current filter.
                 </div>
               )}
 
