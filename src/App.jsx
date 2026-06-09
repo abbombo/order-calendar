@@ -4725,7 +4725,9 @@ function App() {
                   {/* File List */}
                   <div className="space-y-2">
                     {uploadedFileName.map((fileName, index) => {
-                      const fileTransactions = transactions.filter(t => t.sourceFile === fileName);
+                      const fileTransactions = dataMode === 'ecommerce'
+                        ? orders.filter(o => o.sourceFile === fileName)
+                        : transactions.filter(t => t.sourceFile === fileName);
                       const detectionResult = fileDetectionResults[fileName];
 
                       // Determine detection status
@@ -4769,18 +4771,23 @@ function App() {
 
                               <p className="text-xs text-gray-500">
                                 {fileTransactions.length === 0 ? (
-                                  <span className="italic">No transactions parsed — try remapping columns</span>
+                                  <span className="italic">No {dataMode === 'ecommerce' ? 'orders' : 'transactions'} parsed — try remapping columns</span>
                                 ) : (
                                   <>
-                                    {fileTransactions.length} transactions
-                                    {fileTransactions.length > 0 && (
-                                      <>
-                                        <span className="text-gray-400 mx-1">•</span>
-                                        {new Date(Math.min(...fileTransactions.map(t => t.date.getTime()))).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}
-                                        {' - '}
-                                        {new Date(Math.max(...fileTransactions.map(t => t.date.getTime()))).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}
-                                      </>
-                                    )}
+                                    {fileTransactions.length} {dataMode === 'ecommerce' ? 'orders' : 'transactions'}
+                                    {fileTransactions.length > 0 && (() => {
+                                      const dateKey = dataMode === 'ecommerce' ? 'order_date' : 'date';
+                                      const times = fileTransactions.map(t => t[dateKey]?.getTime()).filter(Boolean);
+                                      if (times.length === 0) return null;
+                                      return (
+                                        <>
+                                          <span className="text-gray-400 mx-1">•</span>
+                                          {new Date(Math.min(...times)).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}
+                                          {' - '}
+                                          {new Date(Math.max(...times)).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}
+                                        </>
+                                      );
+                                    })()}
                                   </>
                                 )}
                               </p>
