@@ -946,16 +946,26 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {previewTransactions.map((t, idx) => (
-                  <tr key={idx} className="hover:bg-gray-50">
-                    <td className="px-3 py-2 text-gray-600">{t.date.toLocaleDateString('en-GB')}</td>
-                    <td className="px-3 py-2 text-gray-900 max-w-xs truncate">{t.description}</td>
-                    <td className={`px-3 py-2 text-right font-medium ${t.amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {t.amount >= 0 ? '+' : ''}£{Math.abs(t.amount).toFixed(2)}
-                    </td>
-                    <td className="px-3 py-2 text-gray-500">{t.type || '-'}</td>
-                  </tr>
-                ))}
+                {previewTransactions.map((t, idx) => {
+                  const dateVal = isEcom ? t.order_date : t.date;
+                  const dateStr = dateVal instanceof Date && !isNaN(dateVal)
+                    ? dateVal.toLocaleDateString('en-GB')
+                    : '—';
+                  const descStr = isEcom
+                    ? [t.customer, t.product].filter(Boolean).join(' · ') || '—'
+                    : (t.description || '—');
+                  const typeStr = isEcom ? (t.status || '—') : (t.type || '—');
+                  return (
+                    <tr key={idx} className="hover:bg-gray-50">
+                      <td className="px-3 py-2 text-gray-600">{dateStr}</td>
+                      <td className="px-3 py-2 text-gray-900 max-w-xs truncate">{descStr}</td>
+                      <td className={`px-3 py-2 text-right font-medium ${t.amount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {t.amount >= 0 ? '+' : ''}£{Math.abs(t.amount).toFixed(2)}
+                      </td>
+                      <td className="px-3 py-2 text-gray-500">{typeStr}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
