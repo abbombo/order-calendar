@@ -25,6 +25,22 @@ import ColumnMapper from './ColumnMapper';
 import { parseBankCSV, BANK_FORMATS } from './bankFormats';
 import { exportToImage } from './utils/exportUtils';
 
+// Remove active-filter selections whose values are no longer present in the
+// available options. Used when a file is deselected in the sidebar so its
+// dependent filter values disappear instead of silently emptying the view.
+// 'direction' (income/expense) is not a file-derived option, so it is kept.
+const pruneActiveFilters = (active, options) => {
+  const pruned = {};
+  Object.keys(active || {}).forEach((key) => {
+    if (key === 'direction') { if (active[key]?.length) pruned[key] = active[key]; return; }
+    const opts = options[key];
+    if (!opts) return; // whole option group gone
+    const kept = (active[key] || []).filter((v) => opts.includes(String(v)));
+    if (kept.length) pruned[key] = kept;
+  });
+  return pruned;
+};
+
 // ── Supabase client (null-safe: gracefully skips if env vars are absent) ──────
 const _sbUrl = import.meta.env.VITE_SUPABASE_URL;
 const _sbKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -1137,7 +1153,8 @@ function App() {
   // Rebuild sidebar filter options for ecommerce mode whenever orders or loaded files change
   useEffect(() => {
     if (dataMode !== 'ecommerce' || orders.length === 0) return;
-    const loaded = orders.filter(o => loadedFiles.includes(o.sourceFile));
+    // Only build options from files that are both loaded AND not hidden in the sidebar
+    const loaded = orders.filter(o => loadedFiles.includes(o.sourceFile) && !hiddenFiles.includes(o.sourceFile));
 
     const opts = {};
     const addVal = (key, val) => {
@@ -1160,8 +1177,36 @@ function App() {
     const result = {};
     Object.entries(opts).forEach(([k, s]) => { result[k] = [...s].sort(); });
     setAvailableFilterOptions(result);
+
+    // Prune selections that no longer have any visible orders (file deselected)
+    const presentPlatforms = new Set(loaded.map(o => o.platform).filter(Boolean));
+    setActivePlatforms(prev => {
+      const next = new Set([...prev].filter(p => presentPlatforms.has(p)));
+      return next.size === prev.size ? prev : next;
+    });
+    const presentStatuses = new Set(loaded.map(o => (o.status || '').toLowerCase()).filter(Boolean));
+    setActiveStatus(prev => (prev === 'all' || presentStatuses.has(prev)) ? prev : 'all');
+    setActiveFilters(prev => pruneActiveFilters(prev, result));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orders, loadedFiles, dataMode]);
+  }, [orders, loadedFiles, hiddenFiles, dataMode]);
+
+  // Rebuild sidebar filter options for bank mode from only the visible files,
+  // so deselecting a file in the sidebar also removes that file's filter values.
+  // Mirrors the visibility predicate used by getFilteredTransactions (hiddenFiles).
+  useEffect(() => {
+    if (dataMode === 'ecommerce') return;
+    if (transactions.length === 0) { setAvailableFilterOptions({}); return; }
+    const visible = transactions.filter(t => !hiddenFiles.includes(t.sourceFile));
+    const result = {
+      type:        [...new Set(visible.map(t => t.type).filter(Boolean))],
+      category:    [...new Set(visible.map(t => t.category).filter(Boolean))],
+      description: [...new Set(visible.map(t => t.description).filter(Boolean))],
+      reference:   [...new Set(visible.map(t => t.reference).filter(Boolean))],
+    };
+    setAvailableFilterOptions(result);
+    setActiveFilters(prev => pruneActiveFilters(prev, result));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transactions, hiddenFiles, dataMode]);
 
   // Update predictions when transactions or manual recurring changes
   useEffect(() => {
@@ -1457,8 +1502,218 @@ function App() {
     setEditingRecurring(null);
   };
 
+  // Export ecommerce orders in multiple formats (CSV / JSON / ICS / XLSX / PDF).
+  // Mirrors what the calendar shows: loaded & not-hidden files, optionally
+  // narrowed by the active sidebar filters (platform / status / custom).
+  const exportOrders = async () => {
+    let ordersToExport = orders.filter(
+      o => loadedFiles.includes(o.sourceFile) && !hiddenFiles.includes(o.sourceFile)
+    );
+    if (exportConfig.applyFilters && hasActiveFilters()) {
+      ordersToExport = getFilteredOrders();
+    }
+    ordersToExport = [...ordersToExport].sort((a, b) => a.date - b.date);
+
+    if (ordersToExport.length === 0) {
+      alert('No orders to export. Check that at least one file is selected in the sidebar.');
+      return;
+    }
+
+    // Union of custom column labels present across the exported orders
+    const customKeys = [...new Set(
+      ordersToExport.flatMap(o => (o.custom ? Object.keys(o.custom) : []))
+    )];
+
+    const fmtDate = (d) => (d instanceof Date && !isNaN(d)) ? d.toISOString().split('T')[0] : '';
+    const baseFilename = `orders_${new Date().toISOString().split('T')[0]}`;
+
+    let content, mimeType, extension;
+
+    switch (exportConfig.format) {
+      case 'ics': {
+        const escapeIcsText = (str) =>
+          (str || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+        content = 'BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Order Calendar//EN\nCALSCALE:GREGORIAN\n';
+        ordersToExport.forEach((o, idx) => {
+          const evDate = (orderDateField === 'fulfil' && o.fulfil_date) ? o.fulfil_date : o.date;
+          const dateStr = fmtDate(evDate).replace(/-/g, '');
+          if (!dateStr) return;
+          const summary = `${o.order_id ? o.order_id + ' — ' : ''}£${Math.abs(o.amount || 0).toFixed(2)}${o.platform ? ' (' + (PLATFORM_LABELS[o.platform] || o.platform) + ')' : ''}`;
+          const desc = [
+            `Amount: £${Math.abs(o.amount || 0).toFixed(2)}`,
+            o.customer ? `Customer: ${o.customer}` : '',
+            o.product  ? `Product: ${o.product}`   : '',
+            o.status   ? `Status: ${o.status}`     : '',
+            o.platform ? `Platform: ${PLATFORM_LABELS[o.platform] || o.platform}` : '',
+            o.channel  ? `Channel: ${o.channel}`   : '',
+          ].filter(Boolean).join('\n');
+          content += 'BEGIN:VEVENT\n';
+          content += `UID:order-${idx}@order-calendar\n`;
+          content += `DTSTAMP:${dateStr}T120000Z\n`;
+          content += `DTSTART:${dateStr}\n`;
+          content += `SUMMARY:${escapeIcsText(summary)}\n`;
+          content += `DESCRIPTION:${escapeIcsText(desc)}\n`;
+          content += 'END:VEVENT\n';
+        });
+        content += 'END:VCALENDAR';
+        mimeType = 'text/calendar';
+        extension = 'ics';
+        break;
+      }
+
+      case 'json': {
+        const jsonData = ordersToExport.map(o => ({
+          order_id:    o.order_id || null,
+          order_date:  fmtDate(o.order_date || o.date) || null,
+          fulfil_date: o.fulfil_date ? fmtDate(o.fulfil_date) : null,
+          customer:    o.customer || null,
+          product:     o.product || null,
+          amount:      o.amount ?? null,
+          status:      o.status || null,
+          platform:    o.platform || null,
+          channel:     o.channel || null,
+          custom:      o.custom || {},
+          sourceFile:  o.sourceFile || null,
+        }));
+        const revenue = ordersToExport.reduce((s, o) => s + (o.amount || 0), 0);
+        content = JSON.stringify({
+          exportDate:   new Date().toISOString(),
+          totalOrders:  jsonData.length,
+          totalRevenue: Number(revenue.toFixed(2)),
+          loadedFiles:  loadedFiles.filter(f => !hiddenFiles.includes(f)),
+          orders:       jsonData,
+        }, null, 2);
+        mimeType = 'application/json';
+        extension = 'json';
+        break;
+      }
+
+      case 'csv': {
+        const sanitizeCsvText = (val) => {
+          const str = String(val ?? '').replace(/"/g, '""');
+          if (/^[=+\-@\t\r]/.test(str)) return `"\t${str}"`;
+          return `"${str}"`;
+        };
+        const headers = ['Order ID', 'Order Date', 'Fulfil Date', 'Customer', 'Product', 'Amount', 'Status', 'Platform', 'Channel', ...customKeys, 'Source File'];
+        const rows = ordersToExport.map(o => [
+          sanitizeCsvText(o.order_id),
+          fmtDate(o.order_date || o.date),
+          o.fulfil_date ? fmtDate(o.fulfil_date) : '',
+          sanitizeCsvText(o.customer),
+          sanitizeCsvText(o.product),
+          (o.amount ?? 0).toFixed(2),
+          sanitizeCsvText(o.status),
+          sanitizeCsvText(PLATFORM_LABELS[o.platform] || o.platform),
+          sanitizeCsvText(o.channel),
+          ...customKeys.map(k => sanitizeCsvText(o.custom?.[k])),
+          sanitizeCsvText(o.sourceFile),
+        ]);
+        content = headers.map(h => `"${h}"`).join(',') + '\n' + rows.map(r => r.join(',')).join('\n');
+        mimeType = 'text/csv';
+        extension = 'csv';
+        break;
+      }
+
+      case 'xlsx': {
+        await new Promise((resolve, reject) => {
+          if (window.XLSX) { resolve(); return; }
+          const script = document.createElement('script');
+          script.id = 'sheetjs-script';
+          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+          script.integrity = 'sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw';
+          script.crossOrigin = 'anonymous';
+          script.onload = resolve;
+          script.onerror = reject;
+          document.head.appendChild(script);
+        });
+        const XLSXLib = window.XLSX;
+        const wb = XLSXLib.utils.book_new();
+
+        const headers = ['Order ID', 'Order Date', 'Fulfil Date', 'Customer', 'Product', 'Amount', 'Status', 'Platform', 'Channel', ...customKeys, 'Source File'];
+        const aoa = [headers];
+        ordersToExport.forEach(o => {
+          aoa.push([
+            o.order_id || '',
+            fmtDate(o.order_date || o.date),
+            o.fulfil_date ? fmtDate(o.fulfil_date) : '',
+            o.customer || '',
+            o.product || '',
+            Number((o.amount ?? 0).toFixed(2)),
+            o.status || '',
+            PLATFORM_LABELS[o.platform] || o.platform || '',
+            o.channel || '',
+            ...customKeys.map(k => o.custom?.[k] ?? ''),
+            o.sourceFile || '',
+          ]);
+        });
+        const ordersWs = XLSXLib.utils.aoa_to_sheet(aoa);
+        ordersWs['!cols'] = headers.map((h, i) => ({ wch: i === 4 ? 28 : 16 }));
+        XLSXLib.utils.book_append_sheet(wb, ordersWs, 'Orders');
+
+        // Summary sheet grouped by platform
+        const byPlatform = {};
+        ordersToExport.forEach(o => {
+          const p = PLATFORM_LABELS[o.platform] || o.platform || 'Other';
+          if (!byPlatform[p]) byPlatform[p] = { count: 0, revenue: 0 };
+          byPlatform[p].count += 1;
+          byPlatform[p].revenue += (o.amount || 0);
+        });
+        const summaryRows = [['Platform', 'Orders', 'Revenue', 'AOV']];
+        Object.entries(byPlatform).forEach(([p, v]) => {
+          summaryRows.push([p, v.count, Number(v.revenue.toFixed(2)), Number((v.revenue / v.count).toFixed(2))]);
+        });
+        const totalRev = ordersToExport.reduce((s, o) => s + (o.amount || 0), 0);
+        summaryRows.push(['TOTAL', ordersToExport.length, Number(totalRev.toFixed(2)), Number((totalRev / ordersToExport.length).toFixed(2))]);
+        const summaryWs = XLSXLib.utils.aoa_to_sheet(summaryRows);
+        summaryWs['!cols'] = [{ wch: 18 }, { wch: 12 }, { wch: 14 }, { wch: 14 }];
+        XLSXLib.utils.book_append_sheet(wb, summaryWs, 'Summary');
+        wb.SheetNames = ['Summary', ...wb.SheetNames.filter(s => s !== 'Summary')];
+
+        const wbOut = XLSXLib.write(wb, { bookType: 'xlsx', type: 'array' });
+        const blob  = new Blob([wbOut], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url   = URL.createObjectURL(blob);
+        const link  = document.createElement('a');
+        link.href = url;
+        link.download = `${baseFilename}.xlsx`;
+        link.click();
+        URL.revokeObjectURL(url);
+        setShowExportModal(false);
+        return;
+      }
+
+      case 'pdf': {
+        const htmlView = exportConfig.htmlView || 'heatmap';
+        const imgFmt   = exportConfig.imageFormat || 'jpg';
+        const prevViewMode = viewMode;
+        flushSync(() => setViewMode(htmlView));
+        await exportToImage(imgFmt, 'orders');
+        setViewMode(prevViewMode);
+        setShowExportModal(false);
+        return;
+      }
+
+      default:
+        alert('Unknown export format');
+        return;
+    }
+
+    const blob = new Blob([content], { type: mimeType });
+    const url  = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${baseFilename}.${extension}`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setShowExportModal(false);
+  };
+
   // Export transactions in multiple formats
   const exportTransactions = async () => {
+    // Ecommerce mode exports orders, not bank transactions
+    if (dataMode === 'ecommerce') {
+      await exportOrders();
+      return;
+    }
     let transactionsToExport = [];
     
     // Get historic transactions - always respect loaded files, optionally apply filters
@@ -2438,7 +2693,7 @@ function App() {
 
   // Filtered orders (respects activePlatforms, activeStatus, sidebar activeFilters, and customFilters)
   const getFilteredOrders = () => {
-    let filtered = orders.filter(o => loadedFiles.includes(o.sourceFile));
+    let filtered = orders.filter(o => loadedFiles.includes(o.sourceFile) && !hiddenFiles.includes(o.sourceFile));
     if (activePlatforms.size > 0) {
       filtered = filtered.filter(o => activePlatforms.has(o.platform));
     }
@@ -2490,16 +2745,16 @@ function App() {
     return { count, revenue, aov, fulfilRate };
   };
 
-  // Platforms present in the loaded orders
+  // Platforms present in the visible orders (loaded and not hidden in the sidebar)
   const getPresentPlatforms = () => {
-    const all = orders.filter(o => loadedFiles.includes(o.sourceFile));
+    const all = orders.filter(o => loadedFiles.includes(o.sourceFile) && !hiddenFiles.includes(o.sourceFile));
     return [...new Set(all.map(o => o.platform))].filter(Boolean);
   };
 
   // Get custom filter options from loaded orders (only columns flagged as_filter)
   const getCustomFilterOptions = () => {
     if (ecomFilterCols.length === 0) return {};
-    const all = orders.filter(o => loadedFiles.includes(o.sourceFile));
+    const all = orders.filter(o => loadedFiles.includes(o.sourceFile) && !hiddenFiles.includes(o.sourceFile));
     const filterOptions = {};
 
     all.forEach(order => {
@@ -4466,15 +4721,17 @@ function App() {
                     className="w-4 h-4 mt-0.5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
                   />
                   <div className="flex-1">
-                    <div className="text-sm font-medium text-gray-800">Historic Transactions</div>
+                    <div className="text-sm font-medium text-gray-800">{dataMode === 'ecommerce' ? 'Orders' : 'Historic Transactions'}</div>
                     <div className="text-xs text-gray-500 mt-0.5">
-                      All past transactions from your uploaded CSV
+                      {dataMode === 'ecommerce' ? 'All orders from your selected files' : 'All past transactions from your uploaded CSV'}
                       {exportConfig.applyFilters && hasActiveFilters() && (
                         <span className="text-indigo-600 font-medium"> (filtered)</span>
                       )}
                     </div>
                     <div className="text-xs text-gray-400 mt-0.5">
-                      {exportConfig.applyFilters ? getFilteredTransactions().length : transactions.length} transactions
+                      {dataMode === 'ecommerce'
+                        ? `${exportConfig.applyFilters && hasActiveFilters() ? getFilteredOrders().length : orders.filter(o => loadedFiles.includes(o.sourceFile) && !hiddenFiles.includes(o.sourceFile)).length} orders`
+                        : `${exportConfig.applyFilters ? getFilteredTransactions().length : transactions.length} transactions`}
                     </div>
                   </div>
                 </label>
@@ -4523,13 +4780,13 @@ function App() {
                       </span>
                     )}
                     {exportConfig.format === 'xlsx' && (
-                      <span className="text-gray-400">Calendar view, one sheet per month</span>
+                      <span className="text-gray-400">{dataMode === 'ecommerce' ? 'Orders table + platform summary' : 'Calendar view, one sheet per month'}</span>
                     )}
                   </div>
                   {exportConfig.includeHistoric && (
-                    <div className="text-gray-500">{exportConfig.applyFilters && hasActiveFilters()
-                      ? getFilteredTransactions().length
-                      : transactions.filter(t => loadedFiles.includes(t.sourceFile)).length} historic transactions</div>
+                    <div className="text-gray-500">{dataMode === 'ecommerce'
+                      ? `${exportConfig.applyFilters && hasActiveFilters() ? getFilteredOrders().length : orders.filter(o => loadedFiles.includes(o.sourceFile) && !hiddenFiles.includes(o.sourceFile)).length} orders`
+                      : `${exportConfig.applyFilters && hasActiveFilters() ? getFilteredTransactions().length : transactions.filter(t => loadedFiles.includes(t.sourceFile)).length} historic transactions`}</div>
                   )}
                   {exportConfig.includePredicted && showPredictions && (
                     <div className="text-gray-500">{predictedTransactions.length} predicted transactions</div>
