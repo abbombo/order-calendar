@@ -50,7 +50,7 @@ const ECOM_INDICATORS = [
  *   detectionResult  : optional bank detection result
  *   queueRemaining   : number of files still queued after this one
  */
-const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemaining = 0 }) => {
+const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemaining = 0, initialMode = 'bank' }) => {
   // ── Step management ────────────────────────────────────────────────────
   const [step, setStep] = useState(1); // 1: Select, 2: Map, 3: Preview
 
@@ -74,7 +74,7 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
   const SAVED_MAPPINGS_KEY = 'transaction_calendar_column_mappings';
 
   // ── E-commerce mode state ──────────────────────────────────────────────
-  const [mapperMode, setMapperMode]             = useState('bank');  // 'bank' | 'ecommerce'
+  const [mapperMode, setMapperMode]             = useState(initialMode === 'ecommerce' ? 'ecommerce' : 'bank');  // 'bank' | 'ecommerce'
   const [ecomMappings, setEcomMappings]         = useState({
     order_id: '', order_date: '', fulfil_date: '',
     customer: '', product: '',   amount: '',
@@ -141,7 +141,7 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
 
       // ── Auto-detect ecommerce vs bank ────────────────────────────────
       const headerSet = new Set(headers.map(h => h.trim()));
-      const isEcom    = ECOM_INDICATORS.some(h => headerSet.has(h));
+      const isEcom    = initialMode === 'ecommerce' || ECOM_INDICATORS.some(h => headerSet.has(h));
 
       if (isEcom) {
         setMapperMode('ecommerce');

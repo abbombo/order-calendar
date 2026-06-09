@@ -40,6 +40,7 @@ function App() {
   const [turnstileToken, setTurnstileToken]   = useState('');
   const turnstileContainerRef = useRef(null);
   const turnstileWidgetIdRef  = useRef(null);
+  const pendingModeRef = useRef(null); // mode chosen on mode-selector screen, committed on mapper complete
   
   // Transaction state
   const [transactions, setTransactions] = useState([]);
@@ -2020,6 +2021,10 @@ function App() {
       }
     }
 
+    // Clear pending mode if the user cancelled before any data was imported
+    // so the mode-selector screen shows again (not a blank calendar)
+    if (!dataMode) pendingModeRef.current = null;
+
     setColumnMapperFile(null);
 
     // Process next queued file
@@ -2641,8 +2646,10 @@ function App() {
   // Mode Selector Screen — shown when no data is loaded
   if (!dataMode && transactions.length === 0 && orders.length === 0) {
     const handleModeChoice = (mode) => {
-      setDataMode(mode);
-      localStorage.setItem('data_mode', mode);
+      // Store chosen mode without setting state — setting dataMode here would dismiss
+      // this screen before any data is loaded, leaving a blank calendar.
+      // dataMode is committed in handleColumnMapperComplete once import succeeds.
+      pendingModeRef.current = mode;
       // Open file upload dialog
       const input = document.createElement('input');
       input.type = 'file';
@@ -4895,6 +4902,7 @@ function App() {
           onCancel={handleColumnMapperCancel}
           detectionResult={fileDetectionResults[columnMapperFile.name]}
           queueRemaining={uploadQueue.length}
+          initialMode={pendingModeRef.current || dataMode || 'bank'}
         />
       )}
 
