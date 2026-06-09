@@ -1,5 +1,24 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Component } from 'react';
 import { flushSync } from 'react-dom';
+
+class ColumnMapperErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl p-6 max-w-md w-full">
+            <h3 className="font-semibold text-red-700 mb-2">Column Mapper Error</h3>
+            <pre className="text-xs text-red-600 bg-red-50 p-3 rounded overflow-auto max-h-40">{this.state.error.message}</pre>
+            <button onClick={this.props.onCancel} className="mt-4 px-4 py-2 bg-gray-200 rounded-lg text-sm">Close</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 import { Upload, Calendar, TrendingDown, TrendingUp, ChevronLeft, ChevronRight, Filter, X, Download, LogIn, UserPlus, LogOut, User, RefreshCw, Sparkles, Tag, Repeat, XCircle, Edit, AlertTriangle, Folder, Trash2, Info, Columns, Check, CreditCard, ShoppingBag } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import ColumnMapper from './ColumnMapper';
@@ -4907,14 +4926,16 @@ function App() {
 
       {/* Column Mapper Modal */}
       {showColumnMapper && columnMapperFile && (
-        <ColumnMapper
-          file={columnMapperFile}
-          onComplete={handleColumnMapperComplete}
-          onCancel={handleColumnMapperCancel}
-          detectionResult={fileDetectionResults[columnMapperFile.name]}
-          queueRemaining={uploadQueue.length}
-          initialMode={pendingModeRef.current || dataMode || 'bank'}
-        />
+        <ColumnMapperErrorBoundary onCancel={handleColumnMapperCancel}>
+          <ColumnMapper
+            file={columnMapperFile}
+            onComplete={handleColumnMapperComplete}
+            onCancel={handleColumnMapperCancel}
+            detectionResult={fileDetectionResults[columnMapperFile.name]}
+            queueRemaining={uploadQueue.length}
+            initialMode={pendingModeRef.current || dataMode || 'bank'}
+          />
+        </ColumnMapperErrorBoundary>
       )}
 
       {/* Delete Transactions Confirmation Modal */}
