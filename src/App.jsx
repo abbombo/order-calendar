@@ -41,6 +41,7 @@ function App() {
   const turnstileContainerRef = useRef(null);
   const turnstileWidgetIdRef  = useRef(null);
   const pendingModeRef = useRef(null); // mode chosen on mode-selector screen, committed on mapper complete
+  const modeSelectorInputRef = useRef(null); // hidden file input for the mode selector screen
   
   // Transaction state
   const [transactions, setTransactions] = useState([]);
@@ -2643,84 +2644,21 @@ function App() {
     );
   }
 
-  // Mode Selector Screen — shown when no data is loaded
-  if (!dataMode && transactions.length === 0 && orders.length === 0) {
-    const handleModeChoice = (mode) => {
-      // Store chosen mode without setting state — setting dataMode here would dismiss
-      // this screen before any data is loaded, leaving a blank calendar.
-      // dataMode is committed in handleColumnMapperComplete once import succeeds.
-      pendingModeRef.current = mode;
-      // Open file upload dialog
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = '.csv';
-      input.multiple = true;
-      input.onchange = handleMultiFileUpload;
-      input.click();
-    };
+  // Mode Selector Screen — shown when no data is loaded.
+  // Rendered as an overlay rather than an early return so the ColumnMapper modal
+  // (rendered at the bottom of the main JSX) remains in the DOM and can open.
+  const showModeSelector = !dataMode && transactions.length === 0 && orders.length === 0;
 
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-600 to-indigo-800 flex items-center justify-center p-4">
-        <div className="max-w-4xl w-full">
-          <div className="text-center mb-8">
-            <Calendar className="w-16 h-16 text-white mx-auto mb-4" />
-            <h1 className="text-4xl font-bold text-white mb-2">Order Calendar</h1>
-            <p className="text-blue-100">Choose your data type to get started</p>
-          </div>
-
-          <div className="grid md:grid-cols-2 gap-6">
-            {/* Bank Transactions Card */}
-            <div
-              onClick={() => handleModeChoice('bank')}
-              className="bg-white rounded-xl shadow-lg p-8 cursor-pointer transition-all hover:shadow-2xl hover:scale-105 border-2 border-transparent hover:border-indigo-500"
-            >
-              <div className="flex flex-col items-center text-center">
-                <div className="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mb-6">
-                  <CreditCard className="w-10 h-10 text-blue-600" />
-                </div>
-                <h2 className="text-2xl font-bold text-gray-800 mb-3">Bank transactions</h2>
-                <p className="text-gray-600 mb-4">Visualise spending from bank or credit card CSV exports</p>
-                <p className="text-sm text-gray-400 mb-6">Monzo · Starling · Barclays · HSBC · Amex</p>
-                <button className="px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors">
-                  Upload bank CSV
-                </button>
-              </div>
-            </div>
-
-            {/* E-commerce Orders Card */}
-            <div
-              onClick={() => handleModeChoice('ecommerce')}
-              className="bg-white rounded-xl shadow-lg p-8 cursor-pointer transition-all hover:shadow-2xl hover:scale-105 border-2 border-transparent hover:border-indigo-500"
-            >
-              <div className="flex flex-col items-center text-center">
-                <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center mb-6">
-                  <ShoppingBag className="w-10 h-10 text-emerald-600" />
-                </div>
-                <h2 className="text-2xl font-bold text-gray-800 mb-3">E-commerce orders</h2>
-                <p className="text-gray-600 mb-4">Track orders, revenue and fulfilment across platforms</p>
-                <p className="text-sm text-gray-400 mb-6">Shopify · TikTok Shop · Etsy · WooCommerce</p>
-                <button className="px-6 py-3 bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 transition-colors">
-                  Upload orders CSV
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {isLoggedIn && (
-            <div className="text-center mt-8">
-              <button
-                onClick={handleLogout}
-                className="text-white hover:text-blue-100 text-sm flex items-center gap-2 mx-auto"
-              >
-                <LogOut className="w-4 h-4" />
-                Logout
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
+  const handleModeChoice = (mode) => {
+    // Store chosen mode without setting state — dataMode is committed in
+    // handleColumnMapperComplete once the import succeeds, so this screen
+    // stays visible until then.
+    pendingModeRef.current = mode;
+    if (modeSelectorInputRef.current) {
+      modeSelectorInputRef.current.value = '';
+      modeSelectorInputRef.current.click();
+    }
+  };
 
   // Main App
   const { daysInMonth, startingDayOfWeek, year, month } = getDaysInMonth(currentDate);
@@ -4890,6 +4828,79 @@ function App() {
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden file input for mode selector — kept in the DOM so browsers don't GC it */}
+      <input
+        ref={modeSelectorInputRef}
+        type="file"
+        accept=".csv"
+        multiple
+        className="hidden"
+        onChange={handleMultiFileUpload}
+      />
+
+      {/* Mode Selector overlay — shown over the main app until data is loaded */}
+      {showModeSelector && (
+        <div className="fixed inset-0 z-50 bg-gradient-to-br from-blue-600 to-indigo-800 flex items-center justify-center p-4">
+          <div className="max-w-4xl w-full">
+            <div className="text-center mb-8">
+              <Calendar className="w-16 h-16 text-white mx-auto mb-4" />
+              <h1 className="text-4xl font-bold text-white mb-2">Order Calendar</h1>
+              <p className="text-blue-100">Choose your data type to get started</p>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-6">
+              {/* Bank Transactions Card */}
+              <div
+                onClick={() => handleModeChoice('bank')}
+                className="bg-white rounded-xl shadow-lg p-8 cursor-pointer transition-all hover:shadow-2xl hover:scale-105 border-2 border-transparent hover:border-indigo-500"
+              >
+                <div className="flex flex-col items-center text-center">
+                  <div className="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mb-6">
+                    <CreditCard className="w-10 h-10 text-blue-600" />
+                  </div>
+                  <h2 className="text-2xl font-bold text-gray-800 mb-3">Bank transactions</h2>
+                  <p className="text-gray-600 mb-4">Visualise spending from bank or credit card CSV exports</p>
+                  <p className="text-sm text-gray-400 mb-6">Monzo · Starling · Barclays · HSBC · Amex</p>
+                  <button className="px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors">
+                    Upload bank CSV
+                  </button>
+                </div>
+              </div>
+
+              {/* E-commerce Orders Card */}
+              <div
+                onClick={() => handleModeChoice('ecommerce')}
+                className="bg-white rounded-xl shadow-lg p-8 cursor-pointer transition-all hover:shadow-2xl hover:scale-105 border-2 border-transparent hover:border-indigo-500"
+              >
+                <div className="flex flex-col items-center text-center">
+                  <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center mb-6">
+                    <ShoppingBag className="w-10 h-10 text-emerald-600" />
+                  </div>
+                  <h2 className="text-2xl font-bold text-gray-800 mb-3">E-commerce orders</h2>
+                  <p className="text-gray-600 mb-4">Track orders, revenue and fulfilment across platforms</p>
+                  <p className="text-sm text-gray-400 mb-6">Shopify · TikTok Shop · Etsy · WooCommerce</p>
+                  <button className="px-6 py-3 bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 transition-colors">
+                    Upload orders CSV
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {isLoggedIn && (
+              <div className="text-center mt-8">
+                <button
+                  onClick={handleLogout}
+                  className="text-white hover:text-blue-100 text-sm flex items-center gap-2 mx-auto"
+                >
+                  <LogOut className="w-4 h-4" />
+                  Logout
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
