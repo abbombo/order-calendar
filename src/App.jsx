@@ -709,10 +709,10 @@ function App() {
     filesToProcess.forEach(file => { newUploadedFiles[file.name] = file; });
     setUploadedFiles(newUploadedFiles);
 
-    // First file replaces if no existing data, rest always merge
+    // First file replaces only if there's no existing data in either mode, rest always merge
     const queue = filesToProcess.map((file, idx) => ({
       file,
-      mode: idx === 0 && transactions.length === 0 ? 'replace' : 'merge'
+      mode: idx === 0 && transactions.length === 0 && orders.length === 0 ? 'replace' : 'merge'
     }));
 
     // If column mapper is already open, append to queue; otherwise open for first file
@@ -5258,6 +5258,7 @@ function App() {
       {showColumnMapper && columnMapperFile && (
         <ColumnMapperErrorBoundary onCancel={handleColumnMapperCancel}>
           <ColumnMapper
+            key={columnMapperFile.name}
             file={columnMapperFile}
             onComplete={handleColumnMapperComplete}
             onCancel={handleColumnMapperCancel}

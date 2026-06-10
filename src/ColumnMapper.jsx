@@ -147,6 +147,10 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
         setMapperMode('ecommerce');
         setDateFormat('YYYY-MM-DD'); // most platforms use ISO dates
 
+        // Start from a clean slate so mappings from a previously mapped file in
+        // the same session don't carry over to a file with different headers.
+        const freshEcom = { order_id:'', order_date:'', fulfil_date:'', customer:'', product:'', amount:'', status:'', channel:'' };
+
         // Find the best-matching saved ecommerce profile
         const ecomProfs   = loadProfiles().filter(p => p.mode === 'ecommerce');
         let best = null, bestScore = 0;
@@ -157,14 +161,26 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
         if (best && bestScore >= 2) {
           setDetectedPlatform(best.name);
           setSelectedEcomProfile(best.name);
-          setEcomMappings(prev => ({ ...prev, ...best.mapping }));
+          setEcomMappings({ ...freshEcom, ...best.mapping });
+          setCustomColumns(best.custom_columns || []);
         } else {
           setDetectedPlatform('e-commerce');
+          setSelectedEcomProfile(null);
+          setEcomMappings(freshEcom);
+          setCustomColumns([]);
         }
       } else {
         // ── Bank mode ──────────────────────────────────────────────────
         setMapperMode('bank');
         setDetectedPlatform('bank format');
+
+        // Start from a clean slate so mappings from a previously mapped file in
+        // the same session don't carry over to a file with different headers.
+        const freshBank = { date:'', time:'', description:'', amount:'', netAmount:'', moneyIn:'', moneyOut:'', type:'', category:'', reference:'', balance:'' };
+        setColumnMappings(freshBank);
+        setSelectedBank(null);
+        setAmountApproach(null);
+        setCustomColumns([]);
 
         if (detectionResult?.key) {
           setSelectedBank(detectionResult.key);
@@ -190,7 +206,8 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
   const autoMapColumns = (bankKey, headers = csvHeaders) => {
     const format = BANK_FORMATS[bankKey];
     if (!format) return;
-    const newMappings = { ...columnMappings };
+    // Build from clean defaults (not the previous file's mappings) so nothing leaks across files
+    const newMappings = { date:'', time:'', description:'', amount:'', netAmount:'', moneyIn:'', moneyOut:'', type:'', category:'', reference:'', balance:'' };
     Object.entries(format.headers).forEach(([field, possibleNames]) => {
       const matched = findMatchingHeader(headers, possibleNames);
       if (matched) newMappings[field] = matched;
