@@ -175,6 +175,7 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
           setColumnMappings(savedMappings.mappings);
           setDateFormat(savedMappings.dateFormat || 'DD/MM/YYYY');
           if (savedMappings.bankKey) setSelectedBank(savedMappings.bankKey);
+          if (savedMappings.custom_columns) setCustomColumns(savedMappings.custom_columns);
         }
       }
 
@@ -219,7 +220,7 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
     try {
       const saved     = JSON.parse(localStorage.getItem(SAVED_MAPPINGS_KEY) || '{}');
       const headerKey = csvHeaders.slice().sort().join('|');
-      saved[headerKey] = { mappings: columnMappings, dateFormat, bankKey: selectedBank, savedAt: new Date().toISOString() };
+      saved[headerKey] = { mappings: columnMappings, dateFormat, bankKey: selectedBank, custom_columns: customColumns, savedAt: new Date().toISOString() };
       localStorage.setItem(SAVED_MAPPINGS_KEY, JSON.stringify(saved));
     } catch (e) { console.error('Failed to save mappings:', e); }
   };
@@ -298,6 +299,14 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
         if (!description && columnMappings.type) description = row[columnMappings.type] || '';
         if (!description) description = 'Transaction';
 
+        // Populate custom fields
+        const customData = {};
+        customColumns.forEach(col => {
+          if (col.label && row[col.csv_col] !== undefined) {
+            customData[col.label] = row[col.csv_col];
+          }
+        });
+
         transactions.push({
           date:        parsedDate,
           time:        row[columnMappings.time]      || '',
@@ -307,6 +316,7 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
           category:    row[columnMappings.category]  || '',
           reference:   row[columnMappings.reference] || '',
           balance:     columnMappings.balance ? parseAmount(row[columnMappings.balance]) : null,
+          custom:      customData,
           sourceFile:  file.name
         });
       } catch (e) { errors.push({ row: index + 1, error: e.message }); }
@@ -464,6 +474,14 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
         if (!description && columnMappings.type) description = row[columnMappings.type] || '';
         if (!description) description = 'Transaction';
 
+        // Populate custom fields
+        const customData = {};
+        customColumns.forEach(col => {
+          if (col.label && row[col.csv_col] !== undefined) {
+            customData[col.label] = row[col.csv_col];
+          }
+        });
+
         transactions.push({
           date:        parsedDate,
           time:        row[columnMappings.time]      || '',
@@ -473,6 +491,7 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
           category:    row[columnMappings.category]  || '',
           reference:   row[columnMappings.reference] || '',
           balance:     columnMappings.balance ? parseAmount(row[columnMappings.balance]) : null,
+          custom:      customData,
           sourceFile:  file.name
         });
       } catch { /* skip errored rows */ }
@@ -485,7 +504,8 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
       columnMappings, dateFormat,
       totalRows:      csvData.length,
       parsedCount:    transactions.length,
-      sourceFile:     file.name
+      sourceFile:     file.name,
+      filterCols:     customColumns.filter(c => c.as_filter && c.label).map(c => c.label),
     });
   };
 
@@ -713,6 +733,106 @@ const ColumnMapper = ({ file, onComplete, onCancel, detectionResult, queueRemain
             <p className="text-xs font-medium text-gray-500 uppercase mb-2">Optional Fields</p>
             {optionalFields.map(renderFieldSelect)}
           </div>
+        </div>
+
+        {/* Additional columns */}
+        <div className="mt-6 pt-4 border-t border-gray-200">
+          <p className="text-sm font-medium text-gray-700 mb-3">Additional columns</p>
+          <p className="text-xs text-gray-500 mb-3">
+            Map extra columns from your CSV that aren't covered by the standard fields above.
+          </p>
+
+          {(() => {
+            const assignedCols = new Set(Object.values(columnMappings).filter(v => v));
+            const alreadyCustom = new Set(customColumns.map(c => c.csv_col));
+
+            return (
+              <div className="space-y-2">
+                {customColumns.map((col, idx) => (
+                  <div key={idx} className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg">
+                    <div className="flex-1 grid grid-cols-3 gap-2">
+                      {/* CSV column selector */}
+                      <select
+                        value={col.csv_col}
+                        onChange={(e) => {
+                          const newCols = [...customColumns];
+                          newCols[idx] = { ...newCols[idx], csv_col: e.target.value };
+                          setCustomColumns(newCols);
+                        }}
+                        className="px-2 py-1 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-indigo-500"
+                      >
+                        <option value="">-- Select column --</option>
+                        {csvHeaders.map(h => (
+                          <option
+                            key={h}
+                            value={h}
+                            disabled={assignedCols.has(h) || (alreadyCustom.has(h) && h !== col.csv_col)}
+                          >
+                            {h}{assignedCols.has(h) ? ' (mapped)' : alreadyCustom.has(h) && h !== col.csv_col ? ' (used)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                      {/* Display label */}
+                      <input
+                        type="text"
+                        placeholder="Display label"
+                        value={col.label}
+                        onChange={(e) => {
+                          const newCols = [...customColumns];
+                          newCols[idx] = { ...newCols[idx], label: e.target.value };
+                          setCustomColumns(newCols);
+                        }}
+                        className="px-2 py-1 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-indigo-500"
+                      />
+                      {/* Filter / Export toggles */}
+                      <div className="flex items-center gap-3 text-xs">
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={col.as_filter}
+                            onChange={(e) => {
+                              const newCols = [...customColumns];
+                              newCols[idx] = { ...newCols[idx], as_filter: e.target.checked };
+                              setCustomColumns(newCols);
+                            }}
+                            className="w-3.5 h-3.5 text-indigo-600 rounded"
+                          />
+                          <span className="text-gray-600">Filter</span>
+                        </label>
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={col.in_export}
+                            onChange={(e) => {
+                              const newCols = [...customColumns];
+                              newCols[idx] = { ...newCols[idx], in_export: e.target.checked };
+                              setCustomColumns(newCols);
+                            }}
+                            className="w-3.5 h-3.5 text-indigo-600 rounded"
+                          />
+                          <span className="text-gray-600">Export</span>
+                        </label>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setCustomColumns(customColumns.filter((_, i) => i !== idx))}
+                      className="p-1 text-gray-400 hover:text-red-500 rounded"
+                      title="Remove"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+
+                <button
+                  onClick={() => setCustomColumns([...customColumns, { csv_col: '', label: '', as_filter: false, in_export: true }])}
+                  className="text-sm text-indigo-600 hover:text-indigo-800 hover:underline"
+                >
+                  + Map additional column
+                </button>
+              </div>
+            );
+          })()}
         </div>
       </div>
     );

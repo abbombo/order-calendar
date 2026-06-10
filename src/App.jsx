@@ -89,6 +89,11 @@ function App() {
   // Ecommerce order state
   const [orders, setOrders] = useState([]);          // ecommerce orders
   const [ecomFilterCols, setEcomFilterCols] = useState([]); // custom column labels marked as_filter
+  const [bankFilterCols, setBankFilterCols] = useState([]); // bank custom column labels marked as_filter
+  const [fileModes, setFileModes] = useState(() => {        // { filename: 'bank' | 'ecommerce' }
+    try { return JSON.parse(localStorage.getItem('tc_file_modes') || '{}'); }
+    catch { return {}; }
+  });
   const [dataMode, setDataMode] = useState(() => {
     // Load from localStorage on init
     const stored = localStorage.getItem('data_mode');
@@ -541,6 +546,7 @@ function App() {
           setUploadedFileName(prev =>
             prev.includes(fileItem.name) ? prev : [...prev, fileItem.name]
           );
+          tagFileMode(fileItem.name, 'bank');
 
           // Parse silently — bypass column mapper even on low confidence
           const text = await blob.text();
@@ -569,6 +575,17 @@ function App() {
   };
   // ──────────────────────────────────────────────────────────────────────────
 
+  // Tag which data mode a file belongs to (persisted) so the File Manager and
+  // sidebar only show files that match the current mode.
+  const tagFileMode = (name, mode) => {
+    setFileModes(prev => {
+      if (prev[name] === mode) return prev;
+      const next = { ...prev, [name]: mode };
+      try { localStorage.setItem('tc_file_modes', JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  };
+
   const handleFileRemove = (fileName, e) => {
     // Stop event propagation to prevent triggering checkbox toggle
     if (e) {
@@ -595,6 +612,14 @@ function App() {
 
       // Remove from hidden files list
       setHiddenFiles(prev => prev.filter(f => f !== fileName));
+
+      // Remove its mode tag
+      setFileModes(prev => {
+        if (!(fileName in prev)) return prev;
+        const next = { ...prev }; delete next[fileName];
+        try { localStorage.setItem('tc_file_modes', JSON.stringify(next)); } catch { /* ignore */ }
+        return next;
+      });
 
       // Remove from Supabase Storage
       deleteFileFromStorage(fileName, userId);
@@ -628,6 +653,7 @@ function App() {
     setActivePlatforms(new Set());
     setActiveFilters({});
     setEcomFilterCols([]);
+    setBankFilterCols([]);
   };
 
   const MAX_FILE_SIZE_MB = 50;
@@ -1203,10 +1229,17 @@ function App() {
       description: [...new Set(visible.map(t => t.description).filter(Boolean))],
       reference:   [...new Set(visible.map(t => t.reference).filter(Boolean))],
     };
+    // Custom columns mapped in the Column Mapper and flagged as filters
+    bankFilterCols.forEach(label => {
+      const vals = [...new Set(
+        visible.map(t => t.custom?.[label]).filter(v => v !== undefined && v !== null && v !== '')
+      )];
+      if (vals.length > 0) result[label] = vals.sort();
+    });
     setAvailableFilterOptions(result);
     setActiveFilters(prev => pruneActiveFilters(prev, result));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transactions, hiddenFiles, dataMode]);
+  }, [transactions, hiddenFiles, dataMode, bankFilterCols]);
 
   // Update predictions when transactions or manual recurring changes
   useEffect(() => {
@@ -1784,7 +1817,10 @@ function App() {
           if (/^[=+\-@\t\r]/.test(str)) return `"\t${str}"`;
           return `"${str}"`;
         };
-        const csvHeaders = ['Date', 'Time', 'Description', 'Amount', 'Type', 'Category', 'Reference', 'Source File', 'Is Predicted', 'Confidence'];
+        const customKeys = [...new Set(
+          transactionsToExport.flatMap(t => (t.custom ? Object.keys(t.custom) : []))
+        )];
+        const csvHeaders = ['Date', 'Time', 'Description', 'Amount', 'Type', 'Category', 'Reference', ...customKeys, 'Source File', 'Is Predicted', 'Confidence'];
         const csvRows = transactionsToExport.map(t => [
           t.date.toISOString().split('T')[0],
           t.time || '',
@@ -1793,12 +1829,13 @@ function App() {
           sanitizeCsvText(t.type),
           sanitizeCsvText(t.category),
           sanitizeCsvText(t.reference),
+          ...customKeys.map(k => sanitizeCsvText(t.custom?.[k])),
           sanitizeCsvText(t.sourceFile),
           t.isPredicted ? 'Yes' : 'No',
           t.isPredicted ? (t.confidence || 'N/A') : ''
         ]);
 
-        content = csvHeaders.join(',') + '\n' + csvRows.map(row => row.join(',')).join('\n');
+        content = csvHeaders.map(h => `"${h}"`).join(',') + '\n' + csvRows.map(row => row.join(',')).join('\n');
         mimeType = 'text/csv';
         extension = 'csv';
         break;
@@ -1814,6 +1851,7 @@ function App() {
           type: t.type || null,
           category: t.category || null,
           reference: t.reference || null,
+          custom: t.custom || {},
           sourceFile: t.sourceFile || null,
           isPredicted: t.isPredicted || false,
           confidence: t.isPredicted ? (t.confidence || null) : null,
@@ -2272,6 +2310,7 @@ function App() {
       });
       setDataMode('ecommerce');
       localStorage.setItem('data_mode', 'ecommerce');
+      tagFileMode(fileName, 'ecommerce');
       if (metadata?.filterCols?.length > 0) {
         setEcomFilterCols(prev => [...new Set([...prev, ...metadata.filterCols])]);
       }
@@ -2294,6 +2333,10 @@ function App() {
     applyParsedTransactions(mappedTransactions, fileName, mode);
     setDataMode('bank');
     localStorage.setItem('data_mode', 'bank');
+    tagFileMode(fileName, 'bank');
+    if (metadata?.filterCols?.length > 0) {
+      setBankFilterCols(prev => [...new Set([...prev, ...metadata.filterCols])]);
+    }
 
     // Close the column mapper and clear file ref BEFORE opening next
     setShowColumnMapper(false);
@@ -2508,18 +2551,20 @@ function App() {
     );
     
     if (activeFilterKeys.length > 0) {
+      // Standard fields live on the transaction; custom-column labels live in t.custom
+      const fieldValue = (t, key) => (key in t) ? t[key] : (t.custom ? t.custom[key] : undefined);
       if (filterLogic === 'AND') {
         filtered = filtered.filter(t => {
           return activeFilterKeys.every(filterKey => {
             const filterValues = activeFilters[filterKey];
-            return filterValues.includes(t[filterKey]);
+            return filterValues.includes(fieldValue(t, filterKey));
           });
         });
       } else {
         filtered = filtered.filter(t => {
           return activeFilterKeys.some(filterKey => {
             const filterValues = activeFilters[filterKey];
-            return filterValues.includes(t[filterKey]);
+            return filterValues.includes(fieldValue(t, filterKey));
           });
         });
       }
@@ -2980,6 +3025,10 @@ function App() {
   const yearStats = getYearStats();
 
   const isEcomMode = dataMode === 'ecommerce' && orders.length > 0;
+  // Only show files that belong to the current data mode (untagged → bank)
+  const filesForCurrentMode = uploadedFileName.filter(
+    name => (fileModes[name] || 'bank') === (dataMode || 'bank')
+  );
   const filteredOrders = isEcomMode ? getFilteredOrders() : [];
   const periodOrders = isEcomMode ? filteredOrders.filter(o => {
     const d = (orderDateField === 'fulfil' && o.fulfil_date) ? o.fulfil_date : o.date;
@@ -3294,11 +3343,11 @@ function App() {
               )}
 
               {/* Files filter — shown first so users see what's loaded */}
-              {uploadedFileName.length > 0 && (
+              {filesForCurrentMode.length > 0 && (
                 <div>
                   <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Files</p>
                   <div className="space-y-0.5 max-h-36 overflow-y-auto">
-                    {uploadedFileName.map(fileName => (
+                    {filesForCurrentMode.map(fileName => (
                       <label key={fileName} className="flex items-center gap-2 px-1 py-1.5 hover:bg-gray-50 rounded-md cursor-pointer">
                         <input
                           type="checkbox"
@@ -3312,9 +3361,13 @@ function App() {
                       </label>
                     ))}
                   </div>
-                  {hiddenFiles.length > 0 && hiddenFiles.length < uploadedFileName.length && (
-                    <p className="text-xs text-gray-400 mt-1 px-1">{uploadedFileName.length - hiddenFiles.length} of {uploadedFileName.length} selected</p>
-                  )}
+                  {(() => {
+                    const total = filesForCurrentMode.length;
+                    const shown = filesForCurrentMode.filter(f => !hiddenFiles.includes(f)).length;
+                    return shown < total ? (
+                      <p className="text-xs text-gray-400 mt-1 px-1">{shown} of {total} selected</p>
+                    ) : null;
+                  })()}
                 </div>
               )}
 
@@ -4980,7 +5033,7 @@ function App() {
 
             {/* File List */}
             <div className="flex-1 overflow-y-auto p-5">
-              {uploadedFileName.length === 0 ? (
+              {filesForCurrentMode.length === 0 ? (
                 <div className="text-center py-8">
                   <p className="text-gray-500 mb-4 text-sm">No files uploaded yet</p>
                   <p className="text-xs text-gray-400">Upload CSV files to get started</p>
@@ -4994,7 +5047,7 @@ function App() {
 
                   {/* File List */}
                   <div className="space-y-2">
-                    {uploadedFileName.map((fileName, index) => {
+                    {filesForCurrentMode.map((fileName, index) => {
                       const fileTransactions = dataMode === 'ecommerce'
                         ? orders.filter(o => o.sourceFile === fileName)
                         : transactions.filter(t => t.sourceFile === fileName);
@@ -5140,12 +5193,12 @@ function App() {
 
       {/* Mode Selector overlay — shown over the main app until data is loaded */}
       {showModeSelector && (
-        <div className="fixed inset-0 z-50 bg-gradient-to-br from-blue-600 to-indigo-800 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-gray-50 flex items-center justify-center p-4">
           <div className="max-w-4xl w-full">
             <div className="text-center mb-8">
-              <Calendar className="w-16 h-16 text-white mx-auto mb-4" />
-              <h1 className="text-4xl font-bold text-white mb-2">Order Calendar</h1>
-              <p className="text-blue-100">Choose your data type to get started</p>
+              <Calendar className="w-16 h-16 text-indigo-600 mx-auto mb-4" />
+              <h1 className="text-4xl font-bold text-gray-900 mb-2">Transaction Calendar</h1>
+              <p className="text-gray-500">Choose your data type to get started</p>
             </div>
 
             <div className="grid md:grid-cols-2 gap-6">
@@ -5190,7 +5243,7 @@ function App() {
               <div className="text-center mt-8">
                 <button
                   onClick={handleLogout}
-                  className="text-white hover:text-blue-100 text-sm flex items-center gap-2 mx-auto"
+                  className="text-gray-500 hover:text-gray-700 text-sm flex items-center gap-2 mx-auto"
                 >
                   <LogOut className="w-4 h-4" />
                   Logout
