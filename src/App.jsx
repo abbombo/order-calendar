@@ -2887,12 +2887,12 @@ function App() {
     const submitDisabled = authLoading || isLocked || (TURNSTILE_ENABLED && !turnstileToken);
 
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-600 to-indigo-800 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
         <div className="bg-white rounded-xl border border-gray-100 shadow-xl p-8 w-full max-w-sm">
           <div className="text-center mb-6">
             <Calendar className="w-10 h-10 text-indigo-600 mx-auto mb-3" />
-            <h1 className="text-xl font-semibold text-gray-900 mb-1">Order Calendar</h1>
-            <p className="text-sm text-gray-500">See your orders in calendar format</p>
+            <h1 className="text-xl font-semibold text-gray-900 mb-1">Transaction Calendar</h1>
+            <p className="text-sm text-gray-500">See your transactions in calendar format</p>
           </div>
 
           <form onSubmit={handleAuth} className="space-y-4">
